@@ -2,6 +2,8 @@
 
 # dependencies
 /node_modules
+/gallery_storage
+deploy_ubuntu.md
 /.pnp
 .pnp.*
 .yarn/*
