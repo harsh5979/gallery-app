@@ -50,11 +50,16 @@ export async function createNewFolder(formData) {
         return { error: 'Unauthorized' };
     }
 
-    const folderName = formData.get('folderName');
-    if (!folderName) return { error: 'Folder name required' };
+    const folderNamesInput = formData.get('folderName');
+    if (!folderNamesInput) return { error: 'Folder name required' };
+
+    // Support multiple folders (comma separated)
+    const folderNames = folderNamesInput.split(',').map(n => n.trim()).filter(Boolean);
 
     try {
-        await createFolder(folderName);
+        for (const name of folderNames) {
+            await createFolder(name);
+        }
 
         revalidatePath('/'); // Refresh gallery list
         revalidateTag('gallery');
@@ -71,15 +76,54 @@ export async function uploadImage(formData) {
     }
 
     const folder = formData.get('folder');
-    const file = formData.get('file');
+    const files = formData.getAll('files');
+    const paths = formData.getAll('paths'); // Matching relative paths
 
-    if (!folder || !file) return { error: 'Missing data' };
+    if (folder === null || files.length === 0) return { error: 'Missing data' };
 
     try {
-        await saveFile(folder, file, file.name);
+        for (let i = 0; i < files.length; i++) {
+            const file = files[i];
+            const relativePath = paths[i] || file.name;
+
+            // Determine subfolder from relative path
+            // e.g., "vacation/day1/img.jpg" -> "vacation/day1"
+            // If just "img.jpg", dirname is "."
+
+            // We want to combine current 'folder' + relative directory
+            // Note: path module isn't available in Edge runtime normally, 
+            // but we are in Node runtime here ('use server' default).
+            // Manually splitting is safer if path might be browser-style forward slashes.
+            const parts = relativePath.split('/');
+            const fileName = parts.pop();
+            const subDir = parts.join('/'); // "vacation/day1"
+
+            const targetFolder = subDir ? (folder ? `${folder}/${subDir}` : subDir) : folder;
+
+            if (targetFolder) {
+                await createFolder(targetFolder);
+            }
+
+            await saveFile(targetFolder || '', file, fileName);
+        }
 
         revalidatePath(`/?folder=${folder}`);
         revalidateTag('gallery');
+        return { success: true };
+    } catch (e) {
+        return { error: e.message };
+    }
+}
+
+export async function deleteItem(path) {
+    const isUserAdmin = await isAdmin();
+    if (!isUserAdmin) return { error: 'Unauthorized' };
+
+    try {
+        await import('@/lib/storage').then(mod => mod.deletePath(path));
+
+        // revalidatePath('/', 'layout'); // Too aggressive, causes full reload feeling
+        revalidateTag('gallery'); // Target specific cache tag for data
         return { success: true };
     } catch (e) {
         return { error: e.message };

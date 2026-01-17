@@ -30,6 +30,14 @@ export async function saveFile(folder, file, filename) {
     await fs.writeFile(path.join(folderPath, filename), buffer);
 }
 
+export async function deletePath(relativePath) {
+    const safePath = path.posix.normalize(relativePath).replace(/^(\.\.(\/|\\|$))+/, '');
+    const absPath = path.join(STORAGE_DIR, safePath);
+    if (!absPath.startsWith(STORAGE_DIR)) throw new Error("Invalid path");
+
+    await fs.rm(absPath, { recursive: true, force: true });
+}
+
 // Unified function to get contents of a directory (folders + images)
 export async function listDirectoryContents(relativePath = '', page = 1, limit = 18) {
     try {

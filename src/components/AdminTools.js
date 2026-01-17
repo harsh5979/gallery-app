@@ -3,100 +3,241 @@
 
 import { useState } from 'react';
 import { createNewFolder, uploadImage } from '@/app/actions';
-import { Plus, Upload, FolderPlus, Loader2 } from 'lucide-react';
+import { Plus, Upload, FolderPlus, Loader2, File } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import ClientPortal from './ClientPortal';
 
 export default function AdminTools({ currentFolder }) {
-    const [isUploadOpen, setIsUploadOpen] = useState(false);
-    const [isFolderOpen, setIsFolderOpen] = useState(false);
+    const [isMenuOpen, setIsMenuOpen] = useState(false);
+    const [isFolderModalOpen, setIsFolderModalOpen] = useState(false);
+    const [isUploadConfirmOpen, setIsUploadConfirmOpen] = useState(false);
     const [isPending, setIsPending] = useState(false);
+    const [pendingFiles, setPendingFiles] = useState([]);
+    const [pendingType, setPendingType] = useState('file'); // 'file' or 'folder'
 
-    async function handleUpload(formData) {
+    // We'll use hidden inputs ref to trigger them
+    let fileInputRef = null;
+    let folderInputRef = null;
+
+    async function handleFileSelect(e, type) {
+        const files = Array.from(e.target.files || []);
+        if (files.length === 0) return;
+
+        setPendingFiles(files);
+        setPendingType(type);
+        setIsUploadConfirmOpen(true);
+        setIsMenuOpen(false);
+
+        // Clear input so same files can be selected again if needed
+        e.target.value = '';
+    }
+
+    async function confirmUpload() {
         setIsPending(true);
-        const res = await uploadImage(formData);
-        setIsPending(false);
-        if (res.success) {
-            setIsUploadOpen(false);
-            // Ideally trigger refresh in parent or use router.refresh() 
-            // In Server Actions with revalidatePath, the parent SC refreshes, but client state might need reset.
-        } else {
-            alert(res.error);
+        const formData = new FormData();
+        formData.append('folder', currentFolder || '');
+
+        const paths = [];
+        for (let i = 0; i < pendingFiles.length; i++) {
+            formData.append('files', pendingFiles[i]);
+            if (pendingType === 'folder') {
+                paths.push(pendingFiles[i].webkitRelativePath || pendingFiles[i].name);
+            } else {
+                paths.push(pendingFiles[i].name);
+            }
+        }
+
+        // Append paths matching the files
+        paths.forEach(p => formData.append('paths', p));
+
+        try {
+            const res = await uploadImage(formData);
+            if (!res.success) {
+                alert(res.error);
+            } else {
+                setIsUploadConfirmOpen(false);
+                setPendingFiles([]);
+            }
+        } catch (err) {
+            alert("Upload failed");
+        } finally {
+            setIsPending(false);
         }
     }
 
     async function handleCreateFolder(formData) {
         setIsPending(true);
         const rawName = formData.get('folderName');
-        const mkPath = currentFolder ? `${currentFolder}/${rawName}` : rawName;
+        const mkPath = rawName.split(',')
+            .map(n => n.trim())
+            .filter(Boolean)
+            .map(n => currentFolder ? `${currentFolder}/${n}` : n)
+            .join(',');
+
         formData.set('folderName', mkPath);
 
         const res = await createNewFolder(formData);
         setIsPending(false);
         if (res.success) {
-            setIsFolderOpen(false);
+            setIsFolderModalOpen(false);
         } else {
             alert(res.error);
         }
     }
 
     return (
-        <div className="fixed bottom-8 right-8 flex flex-col gap-4 z-40">
-            {/* FABs */}
-            <motion.button
-                whileHover={{ scale: 1.1 }}
-                whileTap={{ scale: 0.9 }}
-                onClick={() => setIsFolderOpen(!isFolderOpen)}
-                className="p-4 rounded-full bg-purple-600 text-white shadow-lg glass-card hover:bg-purple-500 transition"
-                title="New Folder"
-            >
-                <FolderPlus size={24} />
-            </motion.button>
-
-            {currentFolder && (
-                <motion.button
-                    whileHover={{ scale: 1.1 }}
-                    whileTap={{ scale: 0.9 }}
-                    onClick={() => setIsUploadOpen(!isUploadOpen)}
-                    className="p-4 rounded-full bg-blue-600 text-white shadow-lg glass-card hover:bg-blue-500 transition"
-                    title="Upload Image"
-                >
-                    <Upload size={24} />
-                </motion.button>
-            )}
-
-            {/* Modals - Simplified as conditional renders for speed */}
+        <div className="fixed bottom-8 right-8 z-40 flex flex-col items-end gap-4">
+            {/* Menu Options */}
             <AnimatePresence>
-                {isFolderOpen && (
+                {isMenuOpen && (
                     <motion.div
-                        initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 20 }}
-                        className="absolute bottom-20 right-0 w-72 p-4 glass rounded-xl border border-white/10"
+                        initial={{ opacity: 0, y: 20, scale: 0.8 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: 20, scale: 0.8 }}
+                        className="flex flex-col gap-2 items-end mb-2"
                     >
-                        <h3 className="font-bold mb-2">Create Folder</h3>
-                        <form action={handleCreateFolder} className="flex gap-2">
-                            <input name="folderName" placeholder="Name" className="flex-1 bg-black/40 rounded px-2 py-1 text-sm border border-white/10" required />
-                            <button disabled={isPending} className="bg-purple-600 px-3 rounded text-sm disabled:opacity-50">
-                                {isPending ? <Loader2 className="animate-spin" size={16} /> : <Plus size={16} />}
-                            </button>
-                        </form>
+                        {/* New Folder */}
+                        <button
+                            onClick={() => { setIsFolderModalOpen(true); setIsMenuOpen(false); }}
+                            className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-full shadow-lg hover:bg-purple-500 glass-card"
+                        >
+                            <span className="text-sm font-medium">New Folder</span>
+                            <FolderPlus size={20} />
+                        </button>
+
+                        {/* Upload Files */}
+                        <button
+                            onClick={() => fileInputRef.click()}
+                            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-full shadow-lg hover:bg-blue-500 glass-card"
+                        >
+                            <span className="text-sm font-medium">Upload Files</span>
+                            <Upload size={20} />
+                        </button>
+
+                        {/* Upload Folder */}
+                        <button
+                            onClick={() => folderInputRef.click()}
+                            className="flex items-center gap-2 px-4 py-2 bg-teal-600 text-white rounded-full shadow-lg hover:bg-teal-500 glass-card"
+                        >
+                            <span className="text-sm font-medium">Upload Folder</span>
+                            <FolderPlus size={20} />
+                        </button>
                     </motion.div>
                 )}
             </AnimatePresence>
 
+            {/* Main FAB */}
+            <motion.button
+                whileHover={{ scale: 1.1 }}
+                whileTap={{ scale: 0.9 }}
+                onClick={() => setIsMenuOpen(!isMenuOpen)}
+                className={`p-4 rounded-full text-white shadow-xl transition-colors ${isMenuOpen ? 'bg-red-500 rotate-45' : 'bg-white/20 backdrop-blur-md hover:bg-white/30'}`}
+            >
+                {isPending ? <Loader2 className="animate-spin" size={24} /> : <Plus size={24} />}
+            </motion.button>
+
+            {/* Hidden Inputs */}
+            <input
+                type="file"
+                hidden
+                multiple
+                accept="image/*,video/*"
+                ref={el => fileInputRef = el}
+                onChange={(e) => handleFileSelect(e, 'file')}
+            />
+            <input
+                type="file"
+                hidden
+                multiple
+                webkitdirectory=""
+                directory=""
+                ref={el => folderInputRef = el}
+                onChange={(e) => handleFileSelect(e, 'folder')}
+            />
+
+            {/* Folder Creation Modal */}
             <AnimatePresence>
-                {isUploadOpen && (
-                    <motion.div
-                        initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 20 }}
-                        className="absolute bottom-20 right-0 w-72 p-4 glass rounded-xl border border-white/10"
-                    >
-                        <h3 className="font-bold mb-2">Upload to {currentFolder}</h3>
-                        <form action={handleUpload} className="flex flex-col gap-2">
-                            <input type="hidden" name="folder" value={currentFolder} />
-                            <input type="file" name="file" accept="image/*" className="text-sm text-gray-400 file:mr-2 file:py-1 file:px-2 file:rounded-full file:border-0 file:text-xs file:bg-blue-500/20 file:text-blue-400 hover:file:bg-blue-500/30" required />
-                            <button disabled={isPending} className="bg-blue-600 py-1 rounded text-sm disabled:opacity-50 flex justify-center">
-                                {isPending ? <Loader2 className="animate-spin" size={16} /> : 'Upload'}
-                            </button>
-                        </form>
-                    </motion.div>
+                {isFolderModalOpen && (
+                    <>
+                        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50" onClick={() => setIsFolderModalOpen(false)} />
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }}
+                            className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-80 p-6 glass-card rounded-2xl border border-white/10 z-50 bg-black/80"
+                        >
+                            <h3 className="font-bold text-xl mb-4 text-white">Create New Folder</h3>
+                            <p className="text-xs text-gray-400 mb-4">You can create multiple folders by separating names with commas.</p>
+                            <form action={async (formData) => {
+                                setIsPending(true);
+                                await handleCreateFolder(formData); // Re-use existing logic but adapted
+                                setIsFolderModalOpen(false);
+                                setIsPending(false);
+                            }} className="flex flex-col gap-4">
+                                <input name="folderName" placeholder="e.g. Vacation, Work" className="bg-white/10 rounded-lg px-4 py-2 text-white border border-white/10 focus:border-purple-500 outline-hidden" required autoFocus />
+                                <div className="flex gap-2 justify-end">
+                                    <button type="button" onClick={() => setIsFolderModalOpen(false)} className="px-4 py-2 rounded-lg text-gray-400 hover:text-white transition">Cancel</button>
+                                    <button disabled={isPending} className="px-6 py-2 bg-purple-600 rounded-lg text-white font-medium hover:bg-purple-500 transition">Create</button>
+                                </div>
+                            </form>
+                        </motion.div>
+                    </>
+                )}
+            </AnimatePresence>
+
+            {/* Upload Confirmation Modal */}
+            <AnimatePresence>
+                {isUploadConfirmOpen && (
+                    <ClientPortal>
+                        <motion.div
+                            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40"
+                            onClick={() => !isPending && setIsUploadConfirmOpen(false)}
+                        />
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.9, x: '-50%', y: '-50%' }}
+                            animate={{ opacity: 1, scale: 1, x: '-50%', y: '-50%' }}
+                            exit={{ opacity: 0, scale: 0.9, x: '-50%', y: '-50%' }}
+                            className="fixed top-1/2 left-1/2 w-80 p-6 glass-card rounded-2xl border border-white/10 z-50 bg-[#0a0a0a] shadow-2xl"
+                            onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                        >
+                            <h3 className="font-bold text-lg mb-2 text-white">Confirm Upload</h3>
+                            <p className="text-sm text-gray-400 mb-6">
+                                Uploading {pendingFiles.length} {pendingType === 'folder' ? 'files from folder' : 'files'} to <span className="text-white font-medium">{currentFolder || 'Home'}</span>?
+                            </p>
+
+                            {/* File Preview List - Limit to 3 */}
+                            <div className="bg-white/5 rounded-lg p-3 mb-6 max-h-32 overflow-y-auto custom-scrollbar">
+                                {pendingFiles.slice(0, 5).map((file, i) => (
+                                    <div key={i} className="flex items-center gap-2 text-xs text-gray-300 py-1 border-b border-white/5 last:border-0">
+                                        <File size={12} className="opacity-50" />
+                                        <span className="truncate">{file.name}</span>
+                                    </div>
+                                ))}
+                                {pendingFiles.length > 5 && (
+                                    <div className="text-xs text-gray-500 text-center pt-2 italic">
+                                        + {pendingFiles.length - 5} more...
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="flex gap-3 justify-end">
+                                <button
+                                    onClick={() => setIsUploadConfirmOpen(false)}
+                                    disabled={isPending}
+                                    className="px-4 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition text-sm disabled:opacity-50"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={confirmUpload}
+                                    disabled={isPending}
+                                    className="px-4 py-2 bg-blue-600/90 hover:bg-blue-600 rounded-lg text-white font-medium transition text-sm flex items-center gap-2 shadow-lg shadow-blue-900/20 disabled:opacity-70 disabled:cursor-not-allowed"
+                                >
+                                    {isPending ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+                                    {isPending ? 'Uploading...' : 'Upload'}
+                                </button>
+                            </div>
+                        </motion.div>
+                    </ClientPortal>
                 )}
             </AnimatePresence>
         </div>

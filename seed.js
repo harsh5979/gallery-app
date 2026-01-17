@@ -2,7 +2,7 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
-const MONGODB_URI = 'mongodb://localhost:27017/gallery_app';
+const MONGODB_URI = process.env.MONGODB_URI;
 
 const UserSchema = new mongoose.Schema({
     username: { type: String, required: true, unique: true },
