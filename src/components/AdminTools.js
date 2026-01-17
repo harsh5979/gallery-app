@@ -1,14 +1,29 @@
 
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { createNewFolder, uploadImage } from '@/app/actions';
 import { Plus, Upload, FolderPlus, Loader2, File } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import ClientPortal from './ClientPortal';
 
 export default function AdminTools({ currentFolder }) {
+    const router = useRouter();
     const [isMenuOpen, setIsMenuOpen] = useState(false);
+    const containerRef = useRef(null);
+
+    useEffect(() => {
+        function handleClickOutside(event) {
+            if (containerRef.current && !containerRef.current.contains(event.target)) {
+                setIsMenuOpen(false);
+            }
+        }
+        document.addEventListener("mousedown", handleClickOutside);
+        return () => {
+            document.removeEventListener("mousedown", handleClickOutside);
+        };
+    }, []);
     const [isFolderModalOpen, setIsFolderModalOpen] = useState(false);
     const [isUploadConfirmOpen, setIsUploadConfirmOpen] = useState(false);
     const [isPending, setIsPending] = useState(false);
@@ -23,27 +38,34 @@ export default function AdminTools({ currentFolder }) {
         const files = Array.from(e.target.files || []);
         if (files.length === 0) return;
 
-        setPendingFiles(files);
-        setPendingType(type);
-        setIsUploadConfirmOpen(true);
-        setIsMenuOpen(false);
+        // Button Click Strategy:
+        // - Folder: Browser forces prompt. Skip custom card to avoid double confirmation.
+        // - File: Browser has no prompt. Show custom card.
+        if (type === 'folder') {
+            await processUpload(files, type);
+        } else {
+            setPendingFiles(files);
+            setPendingType(type);
+            setIsUploadConfirmOpen(true);
+            setIsMenuOpen(false);
+        }
 
-        // Clear input so same files can be selected again if needed
         e.target.value = '';
     }
 
-    async function confirmUpload() {
+    async function processUpload(files, type) {
         setIsPending(true);
         const formData = new FormData();
         formData.append('folder', currentFolder || '');
 
         const paths = [];
-        for (let i = 0; i < pendingFiles.length; i++) {
-            formData.append('files', pendingFiles[i]);
-            if (pendingType === 'folder') {
-                paths.push(pendingFiles[i].webkitRelativePath || pendingFiles[i].name);
+        for (let i = 0; i < files.length; i++) {
+            formData.append('files', files[i]);
+            if (type === 'folder') {
+                // Check for our custom property from drag-and-drop OR standard browser property
+                paths.push(files[i].customPath || files[i].webkitRelativePath || files[i].name);
             } else {
-                paths.push(pendingFiles[i].name);
+                paths.push(files[i].name);
             }
         }
 
@@ -57,12 +79,17 @@ export default function AdminTools({ currentFolder }) {
             } else {
                 setIsUploadConfirmOpen(false);
                 setPendingFiles([]);
+                router.refresh();
             }
         } catch (err) {
             alert("Upload failed");
         } finally {
             setIsPending(false);
         }
+    }
+
+    async function confirmUpload() {
+        await processUpload(pendingFiles, pendingType);
     }
 
     async function handleCreateFolder(formData) {
@@ -80,13 +107,14 @@ export default function AdminTools({ currentFolder }) {
         setIsPending(false);
         if (res.success) {
             setIsFolderModalOpen(false);
+            router.refresh();
         } else {
             alert(res.error);
         }
     }
 
     return (
-        <div className="fixed bottom-8 right-8 z-40 flex flex-col items-end gap-4">
+        <div ref={containerRef} className="fixed bottom-8 right-8 z-40 flex flex-col items-end gap-4">
             {/* Menu Options */}
             <AnimatePresence>
                 {isMenuOpen && (
@@ -242,4 +270,38 @@ export default function AdminTools({ currentFolder }) {
             </AnimatePresence>
         </div>
     );
+}
+
+// Helper to recursively read entries
+async function scanFiles(entry) {
+    if (entry.isFile) {
+        return new Promise((resolve) => {
+            entry.file((file) => {
+                // Use a SAFE custom property instead of trying to override the read-only webkitRelativePath
+                file.customPath = entry.fullPath.substring(1); // Remove leading slash
+                resolve([file]);
+            });
+        });
+    } else if (entry.isDirectory) {
+        const dirReader = entry.createReader();
+        const entries = [];
+
+        const readEntries = async () => {
+            const results = await new Promise((resolve) => {
+                dirReader.readEntries((e) => resolve(e), (err) => resolve([]));
+            });
+
+            if (results.length > 0) {
+                entries.push(...results);
+                await readEntries(); // Continue reading (browsers return in chunks)
+            }
+        };
+
+        await readEntries();
+
+        const filePromises = entries.map(e => scanFiles(e));
+        const files = await Promise.all(filePromises);
+        return files.flat();
+    }
+    return [];
 }

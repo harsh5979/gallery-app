@@ -25,6 +25,7 @@ export default async function Home({ searchParams }) {
 
   return (
     <GalleryClient
+      key={folder || 'home'} // Force reset state when folder changes
       initialFolders={folders}
       initialImages={imagesData}
       role={session?.role} // Pass role to client to conditionally show admin tools

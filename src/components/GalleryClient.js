@@ -57,15 +57,18 @@ export default function GalleryClient({ initialFolders, initialImages, role }) {
             }
         });
         if (node) observer.current.observe(node);
-    }, [loadingMore, hasMore]);
+    }, [loadingMore, hasMore, loadMore]);
 
-    // Reset when folder changes (handled by key in parent usually, but here just in case)
+    // Sync state with props when router.refresh() updates the data
     useEffect(() => {
         setImages(initialImages?.images || []);
         setFolders(initialFolders || []);
         setHasMore(initialImages?.hasMore || false);
+        // We don't reset page here because if we are just refreshing data (e.g. upload), 
+        // we might want to stay relatively stable, OR we might want to reset if the dataset changed drastically.
+        // For new uploads appearing at the top/end, resetting to page 1 is safest to ensure consistency.
         setPage(1);
-    }, [currentFolder, initialImages, initialFolders]);
+    }, [initialImages, initialFolders]);
 
     return (
         <div className="pb-20 pt-0">
