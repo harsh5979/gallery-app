@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import fs from 'fs/promises';
+import fsPromises from 'fs/promises';
+import fs from 'fs';
 import path from 'path';
 
 const STORAGE_DIR = path.join(process.cwd(), 'gallery_storage');
@@ -40,37 +41,60 @@ export async function GET(request, { params }) {
 
     const filePath = path.join(STORAGE_DIR, folderPath, filename);
 
-    try {
-        await fs.access(filePath);
-        // Create read stream for better performance with large files (videos)
-        // Note: readFile buffers entire file, createReadStream is better but NextResponse with buffer is easier for images.
-        // For videos, Range requests support is ideal but let's stick to buffer for now or switch to stream if simple.
-        // Actually, for 16k pics, standard buffer is fine. Usage of stream for video is better.
-        // Let's stick to simple buffer for consistency unless user complains of video load fail.
-        const fileBuffer = await fs.readFile(filePath);
+    // Video Streaming Logic (Range Support)
+    const stat = await fsPromises.stat(filePath);
+    const fileSize = stat.size;
+    const range = request.headers.get('range');
 
-        // Simple mime type detection
-        const ext = path.extname(filename).toLowerCase();
-        let contentType = 'application/octet-stream';
-        // Images
-        if (ext === '.jpg' || ext === '.jpeg') contentType = 'image/jpeg';
-        else if (ext === '.png') contentType = 'image/png';
-        else if (ext === '.gif') contentType = 'image/gif';
-        else if (ext === '.webp') contentType = 'image/webp';
-        else if (ext === '.svg') contentType = 'image/svg+xml';
-        // Videos
-        else if (ext === '.mp4') contentType = 'video/mp4';
-        else if (ext === '.webm') contentType = 'video/webm';
-        else if (ext === '.mov') contentType = 'video/quicktime';
-        else if (ext === '.mkv') contentType = 'video/x-matroska';
+    const ext = path.extname(filename).toLowerCase();
+    let contentType = 'application/octet-stream';
+    if (ext === '.mp4') contentType = 'video/mp4';
+    else if (ext === '.webm') contentType = 'video/webm';
+    else if (ext === '.mov') contentType = 'video/quicktime';
+    else if (ext === '.mkv') contentType = 'video/x-matroska';
+    else if (ext === '.jpg' || ext === '.jpeg') contentType = 'image/jpeg';
+    else if (ext === '.png') contentType = 'image/png';
+    else if (ext === '.gif') contentType = 'image/gif';
+    else if (ext === '.webp') contentType = 'image/webp';
+    else if (ext === '.svg') contentType = 'image/svg+xml';
 
+    if (range && contentType.startsWith('video/')) {
+        const parts = range.replace(/bytes=/, "").split("-");
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+        const chunksize = (end - start) + 1;
+
+        const fileStream = fs.createReadStream(filePath, { start, end });
+
+        // Convert Node stream to Web Stream for Next.js
+        const stream = new ReadableStream({
+            start(controller) {
+                fileStream.on('data', chunk => controller.enqueue(chunk));
+                fileStream.on('end', () => controller.close());
+                fileStream.on('error', (err) => controller.error(err));
+            }
+        });
+
+        return new NextResponse(stream, {
+            status: 206,
+            headers: {
+                'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+                'Accept-Ranges': 'bytes',
+                'Content-Length': chunksize,
+                'Content-Type': contentType,
+                'Cache-Control': 'no-cache', // Important for partial content generally
+            },
+        });
+    } else {
+        // Standard full file response (images or full video download)
+        const fileBuffer = await fsPromises.readFile(filePath);
         return new NextResponse(fileBuffer, {
             headers: {
                 'Content-Type': contentType,
+                'Content-Length': fileSize,
                 'Cache-Control': 'public, max-age=31536000, immutable',
+                'Accept-Ranges': 'bytes', // Advertise range support
             },
         });
-    } catch (e) {
-        return new NextResponse('File Not Found', { status: 404 });
     }
 }

@@ -2,7 +2,7 @@
 const nextConfig = {
   experimental: {
     serverActions: {
-      bodySizeLimit: '50mb',
+      bodySizeLimit: '500mb',
     },
     // serverActions: true, // Enabled by default in 15
   },

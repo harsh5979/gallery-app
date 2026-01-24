@@ -1,11 +1,13 @@
 
 import { getSession } from '@/lib/auth';
 import { getGalleryData } from '@/app/actions';
-import GalleryClient from '@/components/GalleryClient';
+import GalleryClient from '@/components/gallery/GalleryClient';
+import SmartNavbar from '@/components/layout/SmartNavbar';
+import BreadcrumbsBar from '@/components/layout/BreadcrumbsBar';
 
 export default async function Home({ searchParams }) {
   const session = await getSession();
-  const { folder } = await searchParams; // Await searchParams in Next 15+
+  const { io: folder } = await searchParams; // 'io' is the new query param name
 
   // Fetch data based on view
   let folders = [];

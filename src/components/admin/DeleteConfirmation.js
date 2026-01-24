@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { MoreVertical, Trash2, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { deleteItem } from '@/app/actions';
-import ClientPortal from './ClientPortal';
+import ClientPortal from '../ui/ClientPortal';
 
 export default function DeleteConfirmation({ path, isFolder = false, onDelete }) {
     const [isOpen, setIsOpen] = useState(false);
@@ -38,10 +38,10 @@ export default function DeleteConfirmation({ path, isFolder = false, onDelete })
                 {isOpen && (
                     <>
                         <div className="fixed inset-0 z-20" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setIsOpen(false); }} />
-                        <div className="absolute right-0 mt-1 w-32 bg-black/90 border border-white/10 rounded-lg shadow-xl overflow-hidden z-30 backdrop-blur-md">
+                        <div className="absolute right-0 mt-1 w-32 bg-background/90 border border-glass-border rounded-lg shadow-xl overflow-hidden z-30 backdrop-blur-md">
                             <button
                                 onClick={(e) => { e.preventDefault(); e.stopPropagation(); setIsConfirmOpen(true); setIsOpen(false); }}
-                                className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-white/10 flex items-center gap-2 transition-colors"
+                                className="w-full text-left px-4 py-2 text-sm text-red-500 hover:bg-foreground/10 flex items-center gap-2 transition-colors"
                             >
                                 <Trash2 size={14} />
                                 Delete
@@ -63,12 +63,12 @@ export default function DeleteConfirmation({ path, isFolder = false, onDelete })
                             initial={{ opacity: 0, scale: 0.9, x: '-50%', y: '-50%' }}
                             animate={{ opacity: 1, scale: 1, x: '-50%', y: '-50%' }}
                             exit={{ opacity: 0, scale: 0.9, x: '-50%', y: '-50%' }}
-                            className="fixed top-1/2 left-1/2 w-80 p-6 glass-card rounded-2xl border border-white/10 z-50 bg-[#0a0a0a] shadow-2xl"
+                            className="fixed top-1/2 left-1/2 w-80 p-6 glass-card rounded-2xl border border-glass-border z-50 bg-background shadow-2xl"
                             onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
                         >
-                            <h3 className="font-bold text-lg mb-2 text-white">Delete {isFolder ? 'Folder' : 'Item'}?</h3>
-                            <p className="text-sm text-gray-400 mb-6">
-                                Are you sure you want to delete <span className="text-white font-medium">{path.split('/').pop()}</span>?
+                            <h3 className="font-bold text-lg mb-2 text-foreground">Delete {isFolder ? 'Folder' : 'Item'}?</h3>
+                            <p className="text-sm text-muted-foreground mb-6">
+                                Are you sure you want to delete <span className="text-foreground font-medium">{path.split('/').pop()}</span>?
                                 {isFolder && " This will delete all contents inside."}
                                 <br />This action cannot be undone.
                             </p>

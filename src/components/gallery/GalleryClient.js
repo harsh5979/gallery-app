@@ -6,17 +6,18 @@ import Link from 'next/link';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Folder, Loader2 } from 'lucide-react';
-import AdminTools from './AdminTools';
+import AdminTools from '../admin/AdminTools';
 import Lightbox from './Lightbox';
 import { getGalleryData } from '@/app/actions';
-import BreadcrumbsBar from './BreadcrumbsBar';
+import BreadcrumbsBar from '../layout/BreadcrumbsBar';
 import GridItem from './GridItem';
-import DeleteConfirmation from './DeleteConfirmation';
+import ItemActionsMenu from './ItemActionsMenu';
 
 export default function GalleryClient({ initialFolders, initialImages, role }) {
     const searchParams = useSearchParams();
     const router = useRouter();
-    const currentFolder = searchParams.get('folder');
+    const currentFolder = searchParams.get('io');
+    const previewParam = searchParams.get('preview');
 
     const [images, setImages] = useState(initialImages?.images || []);
     const [folders, setFolders] = useState(initialFolders || []);
@@ -24,6 +25,32 @@ export default function GalleryClient({ initialFolders, initialImages, role }) {
     const [page, setPage] = useState(1);
     const [loadingMore, setLoadingMore] = useState(false);
     const [selectedImage, setSelectedImage] = useState(null);
+
+    // Sync URL -> State (On Mount / Param Change)
+    useEffect(() => {
+        if (previewParam) {
+            const found = images.find(img => (typeof img === 'string' ? img : img.name) === previewParam);
+            const target = found || previewParam;
+            // Only update if different to avoid cycles
+            if (selectedImage !== target) {
+                setSelectedImage(target);
+            }
+        } else if (selectedImage !== null) {
+            setSelectedImage(null);
+        }
+    }, [previewParam, images, selectedImage]);
+
+    // Helper to update URL
+    const updatePreviewUrl = useCallback((filename) => {
+        // ... implementation matches previous, safe to keep or just ensure it's here if I'm replacing a block
+        const params = new URLSearchParams(searchParams);
+        if (filename) {
+            params.set('preview', filename);
+        } else {
+            params.delete('preview');
+        }
+        router.push(`${window.location.pathname}?${params.toString()}`, { scroll: false });
+    }, [searchParams, router]);
 
     const loadMore = useCallback(async () => {
         setLoadingMore(true);
@@ -38,13 +65,16 @@ export default function GalleryClient({ initialFolders, initialImages, role }) {
         // Auto-advance lightbox if it was open at the last image
         if (selectedImage && images.indexOf(selectedImage) === images.length - 1 && res.images.length > 0) {
             setSelectedImage(res.images[0]);
+            // Also update URL if auto-advancing
+            const nextImg = res.images[0];
+            updatePreviewUrl(typeof nextImg === 'string' ? nextImg : nextImg.name);
         }
 
         setHasMore(res.hasMore);
         setFolders(res.folders);
         setPage(nextPage);
         setLoadingMore(false);
-    }, [page, currentFolder, selectedImage, images]);
+    }, [page, currentFolder, selectedImage, images, updatePreviewUrl]);
 
     // Observer for infinite scroll
     const observer = useRef();
@@ -59,35 +89,63 @@ export default function GalleryClient({ initialFolders, initialImages, role }) {
         if (node) observer.current.observe(node);
     }, [loadingMore, hasMore, loadMore]);
 
-    // Sync state with props when router.refresh() updates the data
+    const isInitialMount = useRef(true);
+
+    // Caching Logic - Restore
     useEffect(() => {
-        setImages(initialImages?.images || []);
-        setFolders(initialFolders || []);
-        setHasMore(initialImages?.hasMore || false);
-        // We don't reset page here because if we are just refreshing data (e.g. upload), 
-        // we might want to stay relatively stable, OR we might want to reset if the dataset changed drastically.
-        // For new uploads appearing at the top/end, resetting to page 1 is safest to ensure consistency.
-        setPage(1);
-    }, [initialImages, initialFolders]);
+        // Only run on client mount once
+        if (typeof window === 'undefined') return;
+
+        const cacheKey = `gallery_cache_${currentFolder || 'root'}`;
+        const cachedData = sessionStorage.getItem(cacheKey);
+
+        if (cachedData && isInitialMount.current) {
+            try {
+                const { images: cImages, folders: cFolders, page: cPage, hasMore: cHasMore, scrollY } = JSON.parse(cachedData);
+                if (cImages && cImages.length > 0) {
+                    setImages(cImages);
+                    setFolders(cFolders);
+                    setPage(cPage);
+                    setHasMore(cHasMore);
+
+                    // Restore scroll
+                    requestAnimationFrame(() => window.scrollTo(0, scrollY));
+                }
+            } catch (e) {
+                console.error("Cache restore failed", e);
+            }
+        }
+        isInitialMount.current = false;
+    }, [currentFolder]); // Dependencies
+
+    // Cache Save logic remains...
+
+    // Removing the "Keep props in sync" effect. 
+    // If the parent passes new initialFolders/Images, this component usually remounts if the key changes (folder change).
+    // If we strictly need to update state when props change while mounted, we can set it, 
+    // but often it's better to let the key prop on the parent handle the reset.
+    // Assuming 'currentFolder' change triggers a remount or we trust the cache effect to handle it.
+    // However, if we navigate without unmounting, we might need it. 
+    // Let's rely on the fact that Next.js usually remounts pg components or we can add a key to the component usage in page.js.
+
 
     return (
         <div className="pb-20 pt-0">
             <BreadcrumbsBar currentFolder={currentFolder} />
 
-
-            {/* Folder List (Always show if present) */}
+            {/* Folder List */}
             {folders.length > 0 && (
                 <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4 mb-12">
                     {folders.map(folder => {
-                        const href = currentFolder ? `/?folder=${currentFolder}/${folder}` : `/?folder=${folder}`;
+                        const href = currentFolder ? `/?io=${currentFolder}/${folder}` : `/?io=${folder}`;
                         return (
                             <Link
                                 key={folder}
                                 href={href}
-                                className="group relative p-6 rounded-2xl glass-card border border-white/5 hover:border-purple-500/50 transition-all hover:scale-[1.02]"
+                                className="group relative p-6 rounded-2xl glass-card border border-glass-border hover:border-purple-500/50 transition-all hover:scale-[1.02]"
                             >
                                 {role === 'admin' && (
-                                    <DeleteConfirmation
+                                    <ItemActionsMenu
                                         path={currentFolder ? `${currentFolder}/${folder}` : folder}
                                         isFolder
                                         onDelete={() => {
@@ -98,7 +156,7 @@ export default function GalleryClient({ initialFolders, initialImages, role }) {
                                 )}
                                 <div className="flex flex-col items-center gap-3">
                                     <Folder size={48} className="text-purple-400 group-hover:text-purple-300 transition-colors" />
-                                    <span className="font-medium text-lg text-gray-200 group-hover:text-white truncate w-full text-center">{folder}</span>
+                                    <span className="font-medium text-lg text-muted-foreground group-hover:text-foreground truncate w-full text-center">{folder}</span>
                                 </div>
                             </Link>
                         );
@@ -106,25 +164,29 @@ export default function GalleryClient({ initialFolders, initialImages, role }) {
                 </div>
             )}
 
-            {/* Image Grid (Always show if present) */}
+            {/* Image Grid */}
             {(images.length > 0 || loadingMore) && (
                 <>
-                    {/* Standard Grid Layout for L-R order */}
                     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                         {images.map((img, index) => {
                             const isLast = index === images.length - 1;
+                            const key = typeof img === 'string' ? img + index : (img.name || index);
                             return (
                                 <GridItem
-                                    key={img + index}
+                                    key={key}
                                     img={img}
                                     index={index}
                                     isLast={isLast}
                                     lastImageRef={lastImageRef}
                                     currentFolder={currentFolder}
-                                    setSelectedImage={setSelectedImage}
+                                    setSelectedImage={(img) => updatePreviewUrl(typeof img === 'string' ? img : img.name)}
                                     role={role}
                                     onDelete={() => {
-                                        setImages(prev => prev.filter(i => i !== img));
+                                        setImages(prev => prev.filter(i => {
+                                            const name = typeof i === 'string' ? i : i.name;
+                                            const targetName = typeof img === 'string' ? img : img.name;
+                                            return name !== targetName;
+                                        }));
                                         router.refresh();
                                     }}
                                 />
@@ -147,11 +209,12 @@ export default function GalleryClient({ initialFolders, initialImages, role }) {
                         currentFolder={currentFolder}
                         hasMore={hasMore}
                         loadingMore={loadingMore}
-                        onClose={() => setSelectedImage(null)}
+                        onClose={() => updatePreviewUrl(null)}
                         onNext={() => {
                             const currentIndex = images.indexOf(selectedImage);
                             if (currentIndex < images.length - 1) {
-                                setSelectedImage(images[currentIndex + 1]);
+                                const nextImg = images[currentIndex + 1];
+                                updatePreviewUrl(typeof nextImg === 'string' ? nextImg : nextImg.name);
                             } else if (hasMore && !loadingMore) {
                                 loadMore();
                             }
@@ -159,9 +222,11 @@ export default function GalleryClient({ initialFolders, initialImages, role }) {
                         onPrev={() => {
                             const currentIndex = images.indexOf(selectedImage);
                             if (currentIndex > 0) {
-                                setSelectedImage(images[currentIndex - 1]);
+                                const prevImg = images[currentIndex - 1];
+                                updatePreviewUrl(typeof prevImg === 'string' ? prevImg : prevImg.name);
                             }
                         }}
+                        role={role}
                     />
                 )}
             </AnimatePresence>

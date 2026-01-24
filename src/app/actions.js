@@ -42,6 +42,22 @@ export async function getGalleryData(folder = '', page = 1) {
     return await getCachedGalleryData(folder, page);
 }
 
+export async function getImageDetails(folder, filename) {
+    const storage = await import('@/lib/storage');
+    return await storage.getImageMeta(folder, filename);
+}
+
+
+export async function getFileContent(folder, filename) {
+    const storage = await import('@/lib/storage');
+    return await storage.readFileContent(folder, filename);
+}
+
+export async function saveFileContent(folder, filename, content) {
+    const storage = await import('@/lib/storage');
+    return await storage.saveFileContent(folder, filename, content);
+}
+
 // --- Admin Actions ---
 
 export async function createNewFolder(formData) {
@@ -65,6 +81,59 @@ export async function createNewFolder(formData) {
         revalidateTag('gallery');
         return { success: true };
     } catch (e) {
+        return { error: e.message };
+    }
+}
+
+export async function deleteItem(path) {
+    const isUserAdmin = await isAdmin();
+    if (!isUserAdmin) return { error: 'Unauthorized' };
+
+    try {
+        await import('@/lib/storage').then(mod => mod.deletePath(path));
+
+        // revalidatePath('/', 'layout'); // Too aggressive, causes full reload feeling
+        revalidateTag('gallery'); // Target specific cache tag for data
+        return { success: true };
+    } catch (e) {
+        return { error: e.message };
+    }
+}
+
+// --- Chunked Upload Action ---
+
+export async function uploadChunk(formData) {
+    const isUserAdmin = await isAdmin();
+    if (!isUserAdmin) return { error: 'Unauthorized' };
+
+    const folder = formData.get('folder');
+    const fileName = formData.get('fileName');
+    const chunk = formData.get('chunk');
+    const chunkIndex = parseInt(formData.get('chunkIndex'));
+    const totalChunks = parseInt(formData.get('totalChunks'));
+
+    if (!fileName || !chunk) return { error: 'Missing data' };
+
+    try {
+        const buffer = Buffer.from(await chunk.arrayBuffer());
+
+        // Use a safe temp directory or the final folder with a .part extension
+        // For simplicity and knowing our storage structure, we'll delegate to a secure helper in storage.js
+        // But since we can't export dynamic functions easily, we'll perform logic here or import logic.
+
+        const storageMod = await import('@/lib/storage');
+        await storageMod.appendChunk(folder, fileName, buffer, chunkIndex, totalChunks);
+
+        if (chunkIndex === totalChunks - 1) {
+            // Final chunk received and appended
+            revalidatePath(`/?io=${folder}`);
+            revalidateTag('gallery');
+            return { success: true, completed: true };
+        }
+
+        return { success: true, completed: false };
+    } catch (e) {
+        console.error("Chunk upload error:", e);
         return { error: e.message };
     }
 }
@@ -107,7 +176,7 @@ export async function uploadImage(formData) {
             await saveFile(targetFolder || '', file, fileName);
         }
 
-        revalidatePath(`/?folder=${folder}`);
+        revalidatePath(`/?io=${folder}`);
         revalidateTag('gallery');
         return { success: true };
     } catch (e) {
@@ -115,17 +184,4 @@ export async function uploadImage(formData) {
     }
 }
 
-export async function deleteItem(path) {
-    const isUserAdmin = await isAdmin();
-    if (!isUserAdmin) return { error: 'Unauthorized' };
 
-    try {
-        await import('@/lib/storage').then(mod => mod.deletePath(path));
-
-        // revalidatePath('/', 'layout'); // Too aggressive, causes full reload feeling
-        revalidateTag('gallery'); // Target specific cache tag for data
-        return { success: true };
-    } catch (e) {
-        return { error: e.message };
-    }
-}

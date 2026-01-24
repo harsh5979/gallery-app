@@ -1,5 +1,6 @@
-
-import LoginForm from '@/components/LoginForm';
+import LoginForm from '@/components/admin/LoginForm';
+import { getSession } from '@/lib/auth';
+import { redirect } from 'next/navigation';
 
 // This is a Server Component (default in /app)
 export default function LoginPage() {

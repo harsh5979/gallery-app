@@ -23,7 +23,8 @@ export function middleware(request) {
         }
 
         // Redirect to login
-        return NextResponse.redirect(new URL('/login', request.url));
+        const loginUrl = new URL('/login', request.url);
+        return NextResponse.redirect(loginUrl);
     }
 
     // If user is authenticated and trying to access login page
