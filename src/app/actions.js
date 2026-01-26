@@ -2,7 +2,7 @@
 'use server';
 
 import { redirect } from 'next/navigation';
-import { loginUser, logoutUser, isAdmin } from '@/lib/auth';
+import { loginUser, logoutUser, isAdmin, getSession } from '@/lib/auth';
 import { listDirectoryContents, createFolder, saveFile } from '@/lib/storage';
 import { revalidatePath, revalidateTag } from 'next/cache';
 
@@ -39,6 +39,10 @@ const getCachedGalleryData = unstable_cache(
 );
 
 export async function getGalleryData(folder = '', page = 1) {
+    const session = await getSession();
+    if (!session) {
+        throw new Error("Unauthorized");
+    }
     return await getCachedGalleryData(folder, page);
 }
 

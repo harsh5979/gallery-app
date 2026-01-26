@@ -3,7 +3,8 @@
 import { useState } from 'react';
 import { MoreVertical, Trash2, Loader2, Expand, Download } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { deleteItem } from '@/app/actions';
+// import { deleteItem } from '@/app/actions'; // Removed
+import { useGalleryMutations } from '@/hooks/useGalleryMutations';
 import ClientPortal from '../ui/ClientPortal';
 import GlassButton from '../ui/GlassButton';
 
@@ -17,20 +18,34 @@ export default function ItemActionsMenu({
 }) {
     const [isOpen, setIsOpen] = useState(false);
     const [isConfirmOpen, setIsConfirmOpen] = useState(false);
-    const [isDeleting, setIsDeleting] = useState(false);
+    // const [isDeleting, setIsDeleting] = useState(false); // Replaced by mutation status
 
-    async function handleDelete() {
-        setIsDeleting(true);
-        const res = await deleteItem(path);
-        setIsDeleting(false);
-        if (res.error) {
-            alert(res.error);
-        } else {
-            setIsOpen(false);
-            setIsConfirmOpen(false);
-            if (onDelete) onDelete();
-        }
+    // We need currentFolder to initialize the hook correctly. 
+    // Usually 'path' is "folder/item", so currentFolder is parent.
+    // But simplest way is to accept currentFolder as prop or extract it.
+    // For now, let's assume the parent can pass `deleteMutation` OR we infer context?
+    // Actually, `useGalleryMutations` needs `currentFolder` to update the right cache.
+    // `ItemActionsMenu` receives `path` (full path). 
+    // We can parse `currentFolder` from `path`. 
+    const currentFolder = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
+
+    // HOWEVER: If we are in root, path is just "image.jpg". currentFolder is empty.
+    // If we are in "A", path is "A/image.jpg". currentFolder is "A".
+    // This works.
+
+    const { deleteItem: deleteMut } = useGalleryMutations(currentFolder);
+
+    function handleDelete() {
+        deleteMut.mutate(path, {
+            onSuccess: () => {
+                setIsOpen(false);
+                setIsConfirmOpen(false);
+                if (onDelete) onDelete(); // Call parent callback if needed (e.g. to close lightbox)
+            }
+        });
     }
+
+    const isDeleting = deleteMut.isPending;
 
     return (
         <>

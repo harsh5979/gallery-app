@@ -179,7 +179,7 @@ export async function readFileContent(folder, filename) {
         if (!filePath.startsWith(STORAGE_DIR)) throw new Error("Invalid path");
         await fs.access(filePath);
 
-        const content = await fs.readFile(filePath, 'utf-8');
+        const content = await fs.readFile(filePath);
         return content;
     } catch (e) {
         console.error("Read File Error:", e);

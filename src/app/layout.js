@@ -4,6 +4,7 @@ import { Inter } from 'next/font/google'; // Or Geist as default
 import Navbar from '@/components/layout/Navbar'; // I'll create this later or now? I'll inline for now or better create it.
 import Link from 'next/link';
 import { getSession } from '@/lib/auth';
+import Providers from './providers';
 
 // I need to define local font or use google font. default was variable.
 // I'll stick to default setup or imports from globals.css
@@ -50,10 +51,12 @@ export default async function RootLayout({ children }) {
     <html lang="en" className="dark">
       <body className="min-h-screen">
         <div className="fixed inset-0 bg-[url('/bg-gradient.svg')] bg-cover opacity-30 -z-10 pointer-events-none" />
-        <Navbar />
-        <main className="px-4 min-h-screen">
-          {children}
-        </main>
+        <Providers>
+          <Navbar />
+          <main className="px-4 min-h-screen">
+            {children}
+          </main>
+        </Providers>
       </body>
     </html>
   );

@@ -7,7 +7,7 @@ import BreadcrumbsBar from '@/components/layout/BreadcrumbsBar';
 
 export default async function Home({ searchParams }) {
   const session = await getSession();
-  const { io: folder } = await searchParams; // 'io' is the new query param name
+  const { io: folder } = await searchParams; 
 
   // Fetch data based on view
   let folders = [];

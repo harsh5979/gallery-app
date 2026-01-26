@@ -2,11 +2,10 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { createNewFolder, uploadChunk, uploadImage, deleteItem } from '@/app/actions';
-import { FolderPlus, Upload, Trash2, X, Loader2, FileUp, CheckCircle, AlertCircle, Plus, File } from 'lucide-react';
+import { uploadChunk, uploadImage } from '@/app/actions';
+import { useGalleryMutations } from '@/hooks/useGalleryMutations';
+import { FolderPlus, Upload, Loader2, Plus, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import DeleteConfirmation from './DeleteConfirmation';
-// ClientPortal is in ../ui/ClientPortal now
 import ClientPortal from '@/components/ui/ClientPortal';
 
 function formatSize(bytes) {
@@ -21,6 +20,7 @@ export default function AdminTools({ currentFolder }) {
     const router = useRouter();
     const [isMenuOpen, setIsMenuOpen] = useState(false);
     const containerRef = useRef(null);
+    const { createFolder, handleUpload } = useGalleryMutations(currentFolder);
 
     useEffect(() => {
         function handleClickOutside(event) {
@@ -52,6 +52,10 @@ export default function AdminTools({ currentFolder }) {
     const fileInputRef = useRef(null);
     const folderInputRef = useRef(null);
 
+    // UI State for Preview
+    const [selectedIndices, setSelectedIndices] = useState(new Set());
+    const [visibleLimit, setVisibleLimit] = useState(10); // Start with 10
+
     async function handleFileSelect(e, type) {
         const files = Array.from(e.target.files || []);
         if (files.length === 0) return;
@@ -63,6 +67,10 @@ export default function AdminTools({ currentFolder }) {
             await prepareUpload(files, type);
         } else {
             setPendingFiles(files);
+            // Select all by default
+            const allIndices = new Set(files.map((_, i) => i));
+            setSelectedIndices(allIndices);
+            setVisibleLimit(10);
             setPendingType(type);
             setIsUploadConfirmOpen(true);
             setIsMenuOpen(false);
@@ -73,16 +81,71 @@ export default function AdminTools({ currentFolder }) {
 
     async function prepareUpload(files, type) {
         setPendingFiles(files);
+        // Select all by default
+        const allIndices = new Set(files.map((_, i) => i));
+        setSelectedIndices(allIndices);
+        setVisibleLimit(10);
         setPendingType(type);
         setIsUploadConfirmOpen(true);
         setIsMenuOpen(false);
     }
 
-    async function startBatchUpload() {
-        setIsUploading(true);
-        setIsUploadConfirmOpen(false);
+    // Helper to toggle selection
+    const toggleSelection = (index) => {
+        const newSet = new Set(selectedIndices);
+        if (newSet.has(index)) {
+            newSet.delete(index);
+        } else {
+            newSet.add(index);
+        }
+        setSelectedIndices(newSet);
+    };
 
-        const totalFiles = pendingFiles.length;
+    // Helper to select/deselect all
+    const toggleAll = () => {
+        if (selectedIndices.size === pendingFiles.length) {
+            setSelectedIndices(new Set());
+        } else {
+            setSelectedIndices(new Set(pendingFiles.map((_, i) => i)));
+        }
+    };
+
+    // Helper to load more
+    const showMore = () => {
+        setVisibleLimit(prev => Math.min(prev + 50, pendingFiles.length)); // Load 50 more
+    };
+
+    async function startBatchUpload() {
+        setIsUploadConfirmOpen(false);
+        // setIsUploading(true); // Handled by mutation status if we want, or keep local for granular progress UI
+
+        handleUpload.mutate({
+            processBatch: async () => {
+                setIsUploading(true);
+                // ... Existing logic ...
+                // Re-pasting the core logic here is necessary or we extract it.
+                // Let's call a separate function `executeUploads`.
+                await executeUploads();
+            }
+        }, {
+            onSettled: () => {
+                setIsUploading(false);
+                router.refresh();
+                // Mutation hook handles invalidation.
+            }
+        });
+    }
+
+    async function executeUploads() {
+        // Filter only selected files
+        const filesToUpload = pendingFiles.filter((_, i) => selectedIndices.has(i));
+
+        if (filesToUpload.length === 0) {
+            alert("No files selected!");
+            return;
+        }
+
+        const totalFiles = filesToUpload.length;
         setUploadProgress(prev => ({ ...prev, total: totalFiles, current: 0 }));
 
         const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
@@ -174,21 +237,19 @@ export default function AdminTools({ currentFolder }) {
 
         // Concurrency Pool Execution
         const pool = [];
-        const filesToUpload = [...pendingFiles]; // Copy
+        // Re-derive because we are inside the async function scope
+        const effectiveFilesToUpload = pendingFiles.filter((_, i) => selectedIndices.has(i));
 
         // Execute
         // We can't use simple map because we need to wait for slots.
         // Simple implementation:
-        for (let i = 0; i < filesToUpload.length; i += CONCURRENCY_LIMIT) {
-            const batch = filesToUpload.slice(i, i + CONCURRENCY_LIMIT);
+        for (let i = 0; i < effectiveFilesToUpload.length; i += CONCURRENCY_LIMIT) {
+            const batch = effectiveFilesToUpload.slice(i, i + CONCURRENCY_LIMIT);
             await Promise.all(batch.map(f => processFile(f)));
         }
 
-        setIsUploading(false);
-        router.refresh();
-        // alert call removed. UI handles it via uploadProgress state check.
-        // We do NOT clear pendingFiles here, because we want the modal to show the success state.
-        // It will be cleared when the user clicks "Done" in the modal.
+        // setIsUploading(false); // Handled by mutation settled
+        // router.refresh();
     }
 
     async function handleCreateFolder(formData) {
@@ -203,14 +264,17 @@ export default function AdminTools({ currentFolder }) {
 
         formData.set('folderName', mkPath);
 
-        const res = await createNewFolder(formData);
-        setIsUploading(false);
-        if (res.success) {
+        formData.set('folderName', mkPath);
+
+        try {
+            await createFolder.mutateAsync(formData);
+            // Success handled by hook (invalidation)
             setIsFolderModalOpen(false);
-            router.refresh();
-        } else {
-            alert(res.error);
+            // router.refresh(); // Hook does invalidation, but router refresh is also good for server components if any.
+        } catch (e) {
+            alert(e.message);
         }
+        setIsUploading(false);
     }
 
     return (
@@ -395,21 +459,53 @@ export default function AdminTools({ currentFolder }) {
                                 // State 3: Confirmation (Start)
                                 <>
                                     <h3 className="font-bold text-lg mb-2 text-foreground">Confirm Upload</h3>
-                                    <p className="text-sm text-muted-foreground mb-6">
-                                        Uploading {pendingFiles.length} {pendingType === 'folder' ? 'files from folder' : 'files'} to <span className="text-foreground font-medium">{currentFolder || 'Home'}</span>?
+                                    <p className="text-sm text-muted-foreground mb-4">
+                                        Uploading <span className="text-foreground font-bold">{selectedIndices.size}</span> of {pendingFiles.length} files to <span className="text-foreground font-medium">{currentFolder || 'Home'}</span>
                                     </p>
 
-                                    <div className="bg-foreground/5 rounded-lg p-3 mb-6 max-h-32 overflow-y-auto custom-scrollbar">
-                                        {pendingFiles.slice(0, 5).map((file, i) => (
-                                            <div key={i} className="flex items-center gap-2 text-xs text-muted-foreground py-1 border-b border-foreground/5 last:border-0">
-                                                <File size={12} className="opacity-50" />
-                                                <span className="truncate">{file.name}</span>
-                                            </div>
-                                        ))}
-                                        {pendingFiles.length > 5 && (
-                                            <div className="text-xs text-muted-foreground text-center pt-2 italic">
-                                                + {pendingFiles.length - 5} more...
-                                            </div>
+                                    {/* Selection Controls */}
+                                    <div className="flex justify-between items-center mb-2 px-1">
+                                        <button
+                                            onClick={toggleAll}
+                                            className="text-xs font-medium text-blue-400 hover:text-blue-300 transition"
+                                        >
+                                            {selectedIndices.size === pendingFiles.length ? 'Deselect All' : 'Select All'}
+                                        </button>
+                                        <span className="text-xs text-muted-foreground">
+                                            {selectedIndices.size} selected
+                                        </span>
+                                    </div>
+
+                                    {/* File List */}
+                                    <div className="bg-foreground/5 rounded-lg p-3 mb-6 max-h-32 overflow-y-auto custom-scrollbar flex flex-col gap-1">
+                                        {pendingFiles.slice(0, visibleLimit).map((file, i) => {
+                                            const isSelected = selectedIndices.has(i);
+                                            return (
+                                                <div
+                                                    key={i}
+                                                    onClick={() => toggleSelection(i)}
+                                                    className={`flex items-center gap-3 text-xs py-2 px-2 rounded-md cursor-pointer transition-colors ${isSelected ? 'bg-blue-500/10 hover:bg-blue-500/20' : 'hover:bg-white/5 opacity-50'}`}
+                                                >
+                                                    <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${isSelected ? 'bg-blue-500 border-blue-500' : 'border-white/20'}`}>
+                                                        {isSelected && <Check size={12} strokeWidth={3} className="text-white" />}
+                                                    </div>
+
+                                                    <div className="flex-1 min-w-0">
+                                                        <div className={`truncate font-medium ${isSelected ? 'text-foreground' : 'text-muted-foreground'}`}>{file.name}</div>
+                                                        <div className="text-[10px] text-muted-foreground opacity-70">{formatSize(file.size)}</div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+
+                                        {/* Show More Button */}
+                                        {pendingFiles.length > visibleLimit && (
+                                            <button
+                                                onClick={(e) => { e.stopPropagation(); showMore(); }}
+                                                className="w-full py-2 mt-2 text-xs text-muted-foreground hover:text-foreground hover:bg-white/5 rounded-md transition-colors border border-dashed border-white/10"
+                                            >
+                                                Show {Math.min(50, pendingFiles.length - visibleLimit)} More ({pendingFiles.length - visibleLimit} remaining)
+                                            </button>
                                         )}
                                     </div>
 
@@ -438,36 +534,4 @@ export default function AdminTools({ currentFolder }) {
     );
 }
 
-// Helper to recursively read entries
-async function scanFiles(entry) {
-    if (entry.isFile) {
-        return new Promise((resolve) => {
-            entry.file((file) => {
-                // Use a SAFE custom property instead of trying to override the read-only webkitRelativePath
-                file.customPath = entry.fullPath.substring(1); // Remove leading slash
-                resolve([file]);
-            });
-        });
-    } else if (entry.isDirectory) {
-        const dirReader = entry.createReader();
-        const entries = [];
 
-        const readEntries = async () => {
-            const results = await new Promise((resolve) => {
-                dirReader.readEntries((e) => resolve(e), (err) => resolve([]));
-            });
-
-            if (results.length > 0) {
-                entries.push(...results);
-                await readEntries(); // Continue reading (browsers return in chunks)
-            }
-        };
-
-        await readEntries();
-
-        const filePromises = entries.map(e => scanFiles(e));
-        const files = await Promise.all(filePromises);
-        return files.flat();
-    }
-    return [];
-}
