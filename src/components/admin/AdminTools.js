@@ -3,8 +3,10 @@
 import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { uploadChunk, uploadImage } from '@/app/actions';
+import { revalidateGallery, syncFolders } from '@/app/adminActions'; // Import revalidate and sync
 import { useGalleryMutations } from '@/hooks/useGalleryMutations';
-import { FolderPlus, Upload, Loader2, Plus, Check } from 'lucide-react';
+import { useSocket } from '@/providers/SocketProvider';
+import { FolderPlus, Upload, Loader2, Plus, Check, LayoutDashboard } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import ClientPortal from '@/components/ui/ClientPortal';
 
@@ -21,6 +23,7 @@ export default function AdminTools({ currentFolder }) {
     const [isMenuOpen, setIsMenuOpen] = useState(false);
     const containerRef = useRef(null);
     const { createFolder, handleUpload } = useGalleryMutations(currentFolder);
+    const socket = useSocket(); // Use the socket instance
 
     useEffect(() => {
         function handleClickOutside(event) {
@@ -126,6 +129,14 @@ export default function AdminTools({ currentFolder }) {
                 // Re-pasting the core logic here is necessary or we extract it.
                 // Let's call a separate function `executeUploads`.
                 await executeUploads();
+
+                // Finalize: Revalidate Cache so images show up
+                await revalidateGallery(currentFolder);
+
+                // If we uploaded a folder, sync DB so it shows in Permissions
+                if (pendingType === 'folder') {
+                    await syncFolders();
+                }
             }
         }, {
             onSettled: () => {
@@ -157,95 +168,98 @@ export default function AdminTools({ currentFolder }) {
         const CONCURRENCY_LIMIT = 3;
 
 
-        // Helper to process a single file
-        const processFile = async (file) => {
-            // Determine relative path
-            let relativePath = file.name;
-            if (pendingType === 'folder') {
-                relativePath = file.customPath || file.webkitRelativePath || file.name;
-            } else {
-                relativePath = file.name;
-            }
+        // Helper to process a single file via Socket
+        const processFileSocket = async (file) => {
+            return new Promise((resolve, reject) => {
+                if (!socket) return reject(new Error("Socket not connected"));
 
-            const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+                // Determine relative path
+                let relativePath = file.name;
+                if (pendingType === 'folder') {
+                    relativePath = file.customPath || file.webkitRelativePath || file.name;
+                } else {
+                    relativePath = file.name;
+                }
 
-            setUploadProgress(prev => ({
-                ...prev,
-                currentFile: `${file.name} (${formatSize(file.size)})`
-            }));
+                const parts = relativePath.split('/');
+                const actualFileName = parts.pop();
+                const subDir = parts.join('/');
+                const targetFolder = subDir ? (currentFolder ? `${currentFolder}/${subDir}` : subDir) : (currentFolder || '');
 
-            let fileSuccess = false;
-            let attempts = 0;
+                setUploadProgress(prev => ({
+                    ...prev,
+                    currentFile: `${file.name} (${formatSize(file.size)})`
+                }));
 
-            while (!fileSuccess && attempts < 3) {
-                try {
-                    if (totalChunks > 1) {
-                        // Chunked Upload for Large Files
-                        for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-                            const start = chunkIndex * CHUNK_SIZE;
+                const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
+                const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
+                // Handlers
+                const onReady = async () => {
+                    try {
+                        for (let i = 0; i < totalChunks; i++) {
+                            const start = i * CHUNK_SIZE;
                             const end = Math.min(start + CHUNK_SIZE, file.size);
                             const chunk = file.slice(start, end);
+                            const arrayBuffer = await chunk.arrayBuffer();
+
+                            socket.emit('upload_chunk', arrayBuffer);
+
+                            // Simple backpressure: wait for ack
+                            await new Promise(r => socket.once('upload_ack', r));
 
                             setUploadProgress(prev => ({
                                 ...prev,
-                                currentFile: `${file.name} (${formatSize(start)} / ${formatSize(file.size)} - ${Math.round((start / file.size) * 100)}%)`
+                                currentFile: `${file.name} (${formatSize(end)} / ${formatSize(file.size)})`
                             }));
-
-                            const chunkFormData = new FormData();
-                            // Target folder calculation...
-                            const parts = relativePath.split('/');
-                            const actualFileName = parts.pop();
-                            const subDir = parts.join('/');
-                            const targetFolder = subDir ? (currentFolder ? `${currentFolder}/${subDir}` : subDir) : (currentFolder || '');
-
-                            chunkFormData.append('folder', targetFolder);
-                            chunkFormData.append('fileName', actualFileName);
-                            chunkFormData.append('chunk', chunk);
-                            chunkFormData.append('chunkIndex', chunkIndex);
-                            chunkFormData.append('totalChunks', totalChunks);
-
-                            const res = await uploadChunk(chunkFormData);
-                            if (res.error) throw new Error(res.error);
                         }
-                        fileSuccess = true;
-                    } else {
-                        // Standard Upload
-                        const formData = new FormData();
-                        formData.append('folder', currentFolder || '');
-                        formData.append('files', file); // actions.js expects 'files' (array) but works with single if looped? 
-                        // Wait, actions.js iterates `files`. If we send one, it works.
-                        formData.append('paths', relativePath);
+                        socket.emit('upload_end');
+                    } catch (e) {
+                        cleanup();
+                        reject(e);
+                    }
+                };
 
-                        const res = await uploadImage(formData);
-                        if (res.error) throw new Error(res.error); // Fix: uploadImage returns {error} not {success:false} sometimes
-                        fileSuccess = true;
-                    }
-                } catch (e) {
-                    console.error(`Upload error ${file.name} (Attempt ${attempts + 1}):`, e);
-                    attempts++;
-                    if (attempts === 3) {
-                        setUploadProgress(prev => ({ ...prev, failed: prev.failed + 1 }));
-                    } else {
-                        await new Promise(r => setTimeout(r, 1000));
-                    }
-                }
-            }
-            if (fileSuccess) {
-                setUploadProgress(prev => ({ ...prev, current: prev.current + 1, success: prev.success + 1 }));
-            }
+                const onComplete = () => {
+                    cleanup();
+                    setUploadProgress(prev => ({ ...prev, current: prev.current + 1, success: prev.success + 1 }));
+                    resolve();
+                };
+
+                const onError = (err) => {
+                    cleanup();
+                    console.error("Socket Upload Error:", err);
+                    setUploadProgress(prev => ({ ...prev, failed: prev.failed + 1 }));
+                    // Don't reject entire batch, just this file
+                    resolve();
+                };
+
+                const cleanup = () => {
+                    socket.off('upload_ready', onReady);
+                    socket.off('upload_complete', onComplete);
+                    socket.off('upload_error', onError);
+                };
+
+                // Listeners
+                socket.on('upload_ready', onReady);
+                socket.on('upload_complete', onComplete);
+                socket.on('upload_error', onError);
+
+                // Start
+                socket.emit('upload_start', {
+                    folder: targetFolder,
+                    fileName: actualFileName,
+                    totalSize: file.size
+                });
+            });
         };
 
-        // Concurrency Pool Execution
-        const pool = [];
-        // Re-derive because we are inside the async function scope
-        const effectiveFilesToUpload = pendingFiles.filter((_, i) => selectedIndices.has(i));
+        // Fallback or unused HTTP processFile removed for brevity if replacing completely.
+        // But let's keep logic simple: we replace the loops below.
 
-        // Execute
-        // We can't use simple map because we need to wait for slots.
-        // Simple implementation:
-        for (let i = 0; i < effectiveFilesToUpload.length; i += CONCURRENCY_LIMIT) {
-            const batch = effectiveFilesToUpload.slice(i, i + CONCURRENCY_LIMIT);
-            await Promise.all(batch.map(f => processFile(f)));
+        // Execute Sequentially for Socket (Single Channel)
+        for (const file of filesToUpload) {
+            await processFileSocket(file);
         }
 
         // setIsUploading(false); // Handled by mutation settled
@@ -295,6 +309,15 @@ export default function AdminTools({ currentFolder }) {
                         >
                             <span className="text-sm font-medium">New Folder</span>
                             <FolderPlus size={20} />
+                        </button>
+
+                        {/* Dashboard Link */}
+                        <button
+                            onClick={() => router.push('/admin')}
+                            className="flex items-center gap-2 px-4 py-2 bg-gray-800 text-white rounded-full shadow-lg hover:bg-gray-700 glass-card cursor-pointer"
+                        >
+                            <span className="text-sm font-medium">Dashboard</span>
+                            <LayoutDashboard size={20} />
                         </button>
 
                         {/* Upload Files */}

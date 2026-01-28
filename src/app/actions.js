@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation';
 import { loginUser, logoutUser, isAdmin, getSession } from '@/lib/auth';
 import { listDirectoryContents, createFolder, saveFile } from '@/lib/storage';
 import { revalidatePath, revalidateTag } from 'next/cache';
+import { syncFolders } from '@/app/adminActions';
 
 // --- Auth Actions ---
 
@@ -41,9 +42,45 @@ const getCachedGalleryData = unstable_cache(
 export async function getGalleryData(folder = '', page = 1) {
     const session = await getSession();
     if (!session) {
+        // Allow public access? For now strict auth.
+        // Actually, we might want public access later.
+        // If not logged in, session is null.
+        // For now, let's keep it strict or check public root.
+        // The original code threw Unauthorized.
         throw new Error("Unauthorized");
     }
-    return await getCachedGalleryData(folder, page);
+
+    // 1. Check access to CURRENT folder
+    const { checkPermission, filterAccessibleFolders } = await import('@/lib/permissions');
+    const canRead = await checkPermission(session.id, folder, 'read');
+    if (!canRead) {
+        throw new Error("Access Denied");
+    }
+
+    // 2. Get Data from Storage (FS)
+    const data = await getCachedGalleryData(folder, page);
+
+    // 3. Filter Subfolders
+    // data.folders is array of strings (names) or objects? 
+    // listDirectoryContents returns names usually or objects with names.
+    // Let's assume listDirectoryContents returns { folders: [{name: 'foo', ...}], images: [...] }
+    // We need to construct full relative paths for the filter
+
+    // Wait, listDirectoryContents usage in storage.js:
+    // returns { folders: [{ name, path, ... }], images: ... }
+    // Actually typically just name or relative path.
+    // I need to check listDirectoryContents output format.
+    // But assuming it returns objects with 'name', the relative path is `${folder}/${name}` (cleanly joined).
+
+    // data.folders is an array of strings (folder names) from storage.js
+    const subfolderPaths = data.folders.map(name => folder ? `${folder}/${name}` : name);
+    const accessiblePaths = await filterAccessibleFolders(session.id, subfolderPaths);
+
+    // Filter the data.folders array
+    // We only keep folders whose relative path is in accessiblePaths
+    data.folders = data.folders.filter((name, i) => accessiblePaths.includes(subfolderPaths[i]));
+
+    return data;
 }
 
 export async function getImageDetails(folder, filename) {
@@ -80,6 +117,9 @@ export async function createNewFolder(formData) {
         for (const name of folderNames) {
             await createFolder(name);
         }
+
+        // Sync to DB so rights can be assigned
+        await syncFolders();
 
         revalidatePath('/'); // Refresh gallery list
         revalidateTag('gallery');

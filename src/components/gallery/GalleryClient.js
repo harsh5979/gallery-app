@@ -2,7 +2,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useInfiniteQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -13,12 +13,33 @@ import { getGalleryData } from '@/app/actions';
 import BreadcrumbsBar from '../layout/BreadcrumbsBar';
 import GridItem from './GridItem';
 import ItemActionsMenu from './ItemActionsMenu';
+import AccessRestricted from '../errors/AccessRestricted';
 
 export default function GalleryClient({ initialFolders, initialImages, role }) {
     const searchParams = useSearchParams();
     const router = useRouter();
     const currentFolder = searchParams.get('io');
-    const previewParam = searchParams.get('preview');
+
+    // Local state for preview to avoid RSC requests on URL change
+    const [selectedFilename, setSelectedFilename] = useState(searchParams.get('preview'));
+
+    // Handle Browser Back/Forward
+    useEffect(() => {
+        const onPopState = () => {
+            const params = new URLSearchParams(window.location.search);
+            setSelectedFilename(params.get('preview'));
+        };
+        window.addEventListener('popstate', onPopState);
+        return () => window.removeEventListener('popstate', onPopState);
+    }, []);
+
+    // Sync if router pushes new params internally (edge case safety)
+    useEffect(() => {
+        const p = searchParams.get('preview');
+        if (p !== selectedFilename) {
+            setSelectedFilename(p);
+        }
+    }, [searchParams]);
 
     // 1. Setup Infinite Query
     const {
@@ -54,23 +75,26 @@ export default function GalleryClient({ initialFolders, initialImages, role }) {
     const folders = useMemo(() => data?.pages[0]?.folders || initialFolders || [], [data, initialFolders]);
     const images = useMemo(() => data?.pages.flatMap(page => page.images) || [], [data]);
 
-    // 3. Derive selected image directly from URL (Single Source of Truth)
+    // 3. Derive selected image from local state
     const selectedImage = useMemo(() => {
-        if (!previewParam) return null;
-        const found = images.find(img => (typeof img === 'string' ? img : img.name) === previewParam);
-        return found || previewParam;
-    }, [previewParam, images]);
+        if (!selectedFilename) return null;
+        const found = images.find(img => (typeof img === 'string' ? img : img.name) === selectedFilename);
+        return found || selectedFilename;
+    }, [selectedFilename, images]);
 
-    // Helper to update URL
+    // Helper to update URL without RSC trigger (Shallow)
     const updatePreviewUrl = useCallback((filename) => {
-        const params = new URLSearchParams(searchParams);
+        const params = new URLSearchParams(window.location.search);
         if (filename) {
             params.set('preview', filename);
         } else {
             params.delete('preview');
         }
-        router.push(`${window.location.pathname}?${params.toString()}`, { scroll: false });
-    }, [searchParams, router]);
+
+        const newUrl = `${window.location.pathname}?${params.toString()}`;
+        window.history.pushState(null, '', newUrl);
+        setSelectedFilename(filename);
+    }, []);
 
     // Observer for infinite scroll
     const observer = useRef();
@@ -88,6 +112,11 @@ export default function GalleryClient({ initialFolders, initialImages, role }) {
     // Optimistic updates could be done via queryClient, but for now we rely on refetch/invalidation
     // when deleting items. 
     // Ideally, pass an onDelete handler that calls queryClient.setQueryData to remove item locally.
+
+    // Handle Access Error (e.g. after immediate revocation and refetch)
+    if (status === 'error') {
+        return <AccessRestricted error="Access Revoked" />;
+    }
 
     return (
         <div className="pb-20 pt-0">

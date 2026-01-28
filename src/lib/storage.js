@@ -95,7 +95,7 @@ export async function listDirectoryContents(relativePath = '', page = 1, limit =
         };
 
         const imageFiles = await Promise.all(items
-            .filter(item => !item.isDirectory() && /\.(jpg|jpeg|png|gif|webp|svg|mp4|webm|mov|mkv|avi|heic|heif|dng|cr2|arw|tiff|tif|bmp|js|jsx|ts|tsx|css|html|json|md|txt|py|java|c|cpp|h|go|rs|sql|xml|yaml|yml|log|ini|conf)$/i.test(item.name))
+            .filter(item => !item.isDirectory() && !item.name.startsWith('.'))// allow all files, skip hidden
             .map(async (item) => {
                 const filePath = path.join(absPath, item.name);
                 const stat = await fs.stat(filePath);

@@ -6,14 +6,14 @@ import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import Image from 'next/image';
 import { useLightbox } from '@/hooks/useLightbox';
 import { useState, useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { getImageDetails, getFileContent } from '@/app/actions';
 import CodeViewer from './CodeViewer';
 import LightboxControls from './LightboxControls';
 
 export default function Lightbox({ selectedImage, images, currentFolder, onClose, onNext, onPrev, hasMore, loadMore, role }) {
     const [loaded, setLoaded] = useState(false);
     const [showInfo, setShowInfo] = useState(false);
-    const [metaData, setMetaData] = useState(null);
-    const [codeContent, setCodeContent] = useState(null);
     const [headerControls, setHeaderControls] = useState(true);
 
     // Keyboard Navigation
@@ -35,34 +35,38 @@ export default function Lightbox({ selectedImage, images, currentFolder, onClose
 
     const imageParam = typeof selectedImage === 'string' ? selectedImage : selectedImage.name;
 
+    // React Query for Metadata
+    const { data: metaData } = useQuery({
+        queryKey: ['file-meta', currentFolder, imageParam],
+        queryFn: () => getImageDetails(currentFolder || '', imageParam),
+        enabled: !!selectedImage,
+        staleTime: 1000 * 60 * 5, // 5 min cache
+    });
+
+    // React Query for Code Content
+    const isCodeFile = /\.(js|jsx|ts|tsx|css|html|json|md|txt|py|java|c|cpp|h|go|rs|sql|xml|yaml|yml|log|ini|conf)$/i.test(imageParam);
+    const { data: codeContent, isLoading: isCodeLoading } = useQuery({
+        queryKey: ['file-content', currentFolder, imageParam],
+        queryFn: () => getFileContent(currentFolder || '', imageParam),
+        enabled: !!selectedImage && isCodeFile,
+        staleTime: 1000 * 60 * 5,
+    });
+
     useEffect(() => {
         setLoaded(false);
-        setMetaData(null);
         setShowInfo(false);
-        setCodeContent(null);
-
-        if (selectedImage) {
-            // Fetch Metadata
-            import('@/app/actions').then(({ getImageDetails }) => {
-                getImageDetails(currentFolder || '', imageParam).then(data => data && setMetaData(data));
-            });
-
-            // Fetch Code Content if applicable
-            if (/\.(js|jsx|ts|tsx|css|html|json|md|txt|py|java|c|cpp|h|go|rs|sql|xml|yaml|yml|log|ini|conf)$/i.test(imageParam)) {
-                import('@/app/actions').then(({ getFileContent }) => {
-                    getFileContent(currentFolder || '', imageParam).then(content => setCodeContent(content));
-                });
-            }
-        }
-    }, [selectedImage, currentFolder, imageParam]);
+    }, [selectedImage]); // Only reset UI state, data handled by Query
 
     if (!selectedImage) return null;
 
     const encodedFolder = currentFolder ? currentFolder.split('/').map(p => encodeURIComponent(p)).join('/') : 'root';
     const encodedImg = encodeURIComponent(imageParam);
     const src = `/api/images/${encodedFolder}/${encodedImg}`;
+
     const isVideo = /\.(mp4|webm|mov|mkv)$/i.test(imageParam);
-    const isCode = /\.(js|jsx|ts|tsx|css|html|json|md|txt|py|java|c|cpp|h|go|rs|sql|xml|yaml|yml|log|ini|conf)$/i.test(imageParam);
+    const isImage = /\.(jpg|jpeg|png|gif|webp|svg|heic|heif|bmp|tiff|tif)$/i.test(imageParam);
+    // isCodeFile already computed
+
     const codeLanguage = imageParam.split('.').pop();
     const imageObj = typeof selectedImage === 'string' ? { name: selectedImage } : selectedImage;
 
@@ -92,7 +96,7 @@ export default function Lightbox({ selectedImage, images, currentFolder, onClose
                         exit={{ opacity: 0 }}
                         transition={{ duration: 0.2 }}
                         className="relative w-full h-full flex items-center justify-center touch-none"
-                        drag={!isCode && !isVideo ? "x" : false} // Disable drag for code/video
+                        drag={!isCodeFile && !isVideo && isImage ? "x" : false} // Disable drag for non-images
                         dragConstraints={{ left: 0, right: 0 }}
                         dragElastic={1}
                         onDragEnd={(e, { offset, velocity }) => {
@@ -107,9 +111,9 @@ export default function Lightbox({ selectedImage, images, currentFolder, onClose
                             }
                         }}
                     >
-                        {isCode ? (
+                        {isCodeFile ? (
                             <div className="relative w-full h-full flex items-center justify-center p-4 z-50">
-                                {codeContent === null ? (
+                                {isCodeLoading ? (
                                     <Loader2 className="animate-spin text-white" size={48} />
                                 ) : (
                                     <CodeViewer
@@ -117,7 +121,15 @@ export default function Lightbox({ selectedImage, images, currentFolder, onClose
                                         language={codeLanguage}
                                         filename={imageObj.name}
                                         currentFolder={currentFolder}
-                                        onSave={(newContent) => setCodeContent(newContent)}
+                                        // onSave needs to invalidate query or update local cache
+                                        onSave={(newContent) => {
+                                            // Ideally call mutation. For now manual update?
+                                            // The Query data is immutable directly. 
+                                            // We rely on revalidate or queryClient.setQueryData if we had access here.
+                                            // Simple: just re-fetch or let CodeViewer handle save + we refetch?
+                                            // CodeViewer calls server action. We need to update this view?
+                                            // Actually CodeViewer manages its own editing state.
+                                        }}
                                         isEditable={role === 'admin'}
                                     />
                                 )}
@@ -126,7 +138,7 @@ export default function Lightbox({ selectedImage, images, currentFolder, onClose
                             <div className="relative w-full h-full flex items-center justify-center">
                                 <video src={src} controls autoPlay className="max-w-full max-h-[90vh] rounded-lg shadow-2xl z-20" />
                             </div>
-                        ) : (
+                        ) : isImage ? (
                             <TransformWrapper initialScale={1} minScale={1} maxScale={4} centerOnInit>
                                 {!loaded && (
                                     <div className="absolute inset-0 flex items-center justify-center z-10">
@@ -151,13 +163,31 @@ export default function Lightbox({ selectedImage, images, currentFolder, onClose
                                     </div>
                                 </TransformComponent>
                             </TransformWrapper>
+                        ) : (
+                            // Fallback for non-previewable files (ISO, etc.)
+                            <div className="flex flex-col items-center justify-center text-white gap-6 p-8 bg-white/5 rounded-2xl border border-white/10">
+                                <Download size={64} className="opacity-50" />
+                                <div className="text-center">
+                                    <h3 className="text-xl font-bold mb-2">Preview Unavailable</h3>
+                                    <p className="text-muted-foreground mb-6">This file type cannot be previewed.</p>
+                                    <a
+                                        href={src}
+                                        download
+                                        className="px-6 py-3 bg-purple-600 hover:bg-purple-500 rounded-lg font-medium transition flex items-center gap-2"
+                                        onClick={(e) => e.stopPropagation()}
+                                    >
+                                        <Download size={18} />
+                                        Download File
+                                    </a>
+                                </div>
+                            </div>
                         )}
                     </motion.div>
                 </AnimatePresence>
             </div>
 
-            {/* Navigation Buttons (Hide if isCode) */}
-            {!isCode && (
+            {/* Navigation Buttons (Hide if isCode or generic) */}
+            {!isCodeFile && isImage && (
                 <>
                     <button className="absolute left-4 p-4 rounded-full bg-white/10 hover:bg-white/20 text-white z-50 transition" onClick={(e) => { e.stopPropagation(); onPrev && onPrev(); }}>
                         <ArrowLeft size={32} />

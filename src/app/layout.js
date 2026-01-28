@@ -5,6 +5,7 @@ import Navbar from '@/components/layout/Navbar'; // I'll create this later or no
 import Link from 'next/link';
 import { getSession } from '@/lib/auth';
 import Providers from './providers';
+import SocketProviderWrapper from '@/components/auth/SocketProviderWrapper';
 
 // I need to define local font or use google font. default was variable.
 // I'll stick to default setup or imports from globals.css
@@ -47,15 +48,19 @@ export const metadata = {
 };
 
 export default async function RootLayout({ children }) {
+  const session = await getSession();
+
   return (
     <html lang="en" className="dark">
       <body className="min-h-screen">
         <div className="fixed inset-0 bg-[url('/bg-gradient.svg')] bg-cover opacity-30 -z-10 pointer-events-none" />
         <Providers>
-          <Navbar />
-          <main className="px-4 min-h-screen">
-            {children}
-          </main>
+          <SocketProviderWrapper session={session}>
+            <Navbar />
+            <main className="px-4 min-h-screen">
+              {children}
+            </main>
+          </SocketProviderWrapper>
         </Providers>
       </body>
     </html>
