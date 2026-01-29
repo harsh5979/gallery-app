@@ -51,10 +51,13 @@ export async function checkPermission(userId, resource, accessType = 'read') {
     // 2. Owner Access
     if (folder.owner && folder.owner.toString() === userId) return true;
 
-    // 3. Public Access (Read Only)
+    // 3. Allowed Users Check (Direct access)
+    if (folder.allowedUsers && folder.allowedUsers.some(id => id.toString() === userId)) return true;
+
+    // 4. Public Access (Read Only)
     if (accessType === 'read' && folder.isPublic) return true;
 
-    // 4. Explicit Permission Check
+    // 5. Explicit Permission Check
     // Hierarchy: Admin > Write > Read
     const levels = { 'read': 1, 'write': 2, 'admin': 3 };
     const requiredLevel = levels[accessType];
@@ -111,10 +114,12 @@ export async function filterAccessibleFolders(userId, paths) {
         let hasAccess = false;
         // 1. Owner
         if (folder.owner && folder.owner.toString() === userId) hasAccess = true;
-        // 2. Public
+        // 2. Allowed Users
+        else if (folder.allowedUsers && folder.allowedUsers.some(id => id.toString() === userId)) hasAccess = true;
+        // 3. Public
         else if (folder.isPublic) hasAccess = true;
         else {
-            // 3. Permissions
+            // 4. Permissions
             const perms = allPerms.filter(p => p.resource.toString() === folder._id.toString());
 
             // Check User Perm

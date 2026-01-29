@@ -1,16 +1,18 @@
 'use client';
 
 import { useState } from 'react';
-import { MoreVertical, Trash2, Loader2, Expand, Download } from 'lucide-react';
+import { MoreVertical, Trash2, Loader2, Expand, Download, Globe, Lock } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 // import { deleteItem } from '@/app/actions'; // Removed
 import { useGalleryMutations } from '@/hooks/useGalleryMutations';
+import { toggleFolderPublic } from '@/app/adminActions';
 import ClientPortal from '../ui/ClientPortal';
 import GlassButton from '../ui/GlassButton';
 
 export default function ItemActionsMenu({
     path,
     isFolder = false,
+    isPublic: initialPublic = null,
     onDelete,
     onView,
     downloadUrl,
@@ -18,6 +20,23 @@ export default function ItemActionsMenu({
 }) {
     const [isOpen, setIsOpen] = useState(false);
     const [isConfirmOpen, setIsConfirmOpen] = useState(false);
+    const [isPublic, setIsPublic] = useState(initialPublic);
+    const [isToggling, setIsToggling] = useState(false);
+
+    async function handleTogglePublic(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsToggling(true);
+        const nextStatus = !isPublic;
+        const res = await toggleFolderPublic(path, nextStatus);
+        if (res.success) {
+            setIsPublic(nextStatus);
+        } else {
+            alert(res.error || "Failed to update");
+        }
+        setIsToggling(false);
+        setIsOpen(false);
+    }
     // const [isDeleting, setIsDeleting] = useState(false); // Replaced by mutation status
 
     // We need currentFolder to initialize the hook correctly. 
@@ -92,6 +111,18 @@ export default function ItemActionsMenu({
                                         <Download size={14} className="text-gray-400" />
                                         Download
                                     </a>
+                                )}
+
+                                {isFolder && isPublic !== null && (
+                                    <button
+                                        onClick={handleTogglePublic}
+                                        className="w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:bg-white/10 flex items-center gap-2 transition-colors"
+                                    >
+                                        {isToggling ? <Loader2 size={14} className="animate-spin text-gray-400" /> : (
+                                            isPublic ? <Lock size={14} className="text-yellow-500" /> : <Globe size={14} className="text-green-500" />
+                                        )}
+                                        {isPublic ? 'Set Private' : 'Set Public'}
+                                    </button>
                                 )}
 
                                 {onDelete && (

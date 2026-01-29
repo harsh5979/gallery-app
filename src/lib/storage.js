@@ -1,28 +1,54 @@
-import fs from 'fs/promises';
-import path from 'path';
-import exifr from 'exifr';
+// Node.js imports are moved inside functions to prevent "Couldn't load fs" errors in client components
 
-const STORAGE_DIR = path.join(process.cwd(), 'gallery_storage');
+const getStorageDir = async () => {
+    const path = await import('path');
+    const customStoragePath = process.env.GALLERY_STORAGE_PATH;
+    return path.resolve(customStoragePath || path.join(process.cwd(), 'gallery_storage'));
+};
 
-// Ensure storage dir exists
+// Ensure storage dir exists (Initialization)
 (async () => {
     try {
-        await fs.access(STORAGE_DIR);
-    } catch {
-        await fs.mkdir(STORAGE_DIR, { recursive: true });
+        const path = await import('path');
+        const fs = await import('fs/promises');
+        const dir = path.resolve(process.env.GALLERY_STORAGE_PATH || path.join(process.cwd(), 'gallery_storage'));
+        await fs.access(dir).catch(() => fs.mkdir(dir, { recursive: true }));
+    } catch (e) {
+        console.error("Storage Initialization Error:", e);
     }
 })();
 
 export async function createFolder(folderName) {
-    // folderName can be "path/to/folder"
-    const folderPath = path.join(STORAGE_DIR, folderName);
-    if (!folderPath.startsWith(STORAGE_DIR)) throw new Error("Invalid path");
-    await fs.mkdir(folderPath, { recursive: true });
+    const path = await import('path');
+    const fs = await import('fs/promises');
+    const STORAGE_DIR = await getStorageDir();
+
+    const folderPath = path.resolve(STORAGE_DIR, folderName);
+    const relative = path.relative(STORAGE_DIR, folderPath);
+    console.log(`[Storage] Creating folder: ${folderPath}`);
+
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+        console.error(`[Storage] Path Blocked: ${folderPath} is outside ${STORAGE_DIR}`);
+        throw new Error("Invalid path");
+    }
+
+    try {
+        await fs.mkdir(folderPath, { recursive: true });
+        console.log(`[Storage] Folder created successfully: ${folderPath}`);
+    } catch (e) {
+        console.error(`[Storage] mkdir Error: ${folderPath}`, e);
+        throw e;
+    }
 }
 
 export async function saveFile(folder, file, filename) {
-    const folderPath = path.join(STORAGE_DIR, folder);
-    if (!folderPath.startsWith(STORAGE_DIR)) throw new Error("Invalid path");
+    const path = await import('path');
+    const fs = await import('fs/promises');
+    const STORAGE_DIR = await getStorageDir();
+
+    const folderPath = path.resolve(STORAGE_DIR, folder || '');
+    const relative = path.relative(STORAGE_DIR, folderPath);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error("Invalid path");
 
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
@@ -31,19 +57,28 @@ export async function saveFile(folder, file, filename) {
 }
 
 export async function deletePath(relativePath) {
+    const path = await import('path');
+    const fs = await import('fs/promises');
+    const STORAGE_DIR = await getStorageDir();
+
     const safePath = path.posix.normalize(relativePath).replace(/^(\.\.(\/|\\|$))+/, '');
-    const absPath = path.join(STORAGE_DIR, safePath);
-    if (!absPath.startsWith(STORAGE_DIR)) throw new Error("Invalid path");
+    const absPath = path.resolve(STORAGE_DIR, safePath);
+    const relative = path.relative(STORAGE_DIR, absPath);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error("Invalid path");
 
     await fs.rm(absPath, { recursive: true, force: true });
 }
 
 // Combine chunks logic
 export async function appendChunk(folder, filename, buffer, chunkIndex, totalChunks) {
-    const folderPath = path.join(STORAGE_DIR, folder || '');
-    if (!folderPath.startsWith(STORAGE_DIR)) throw new Error("Invalid path");
+    const path = await import('path');
+    const fs = await import('fs/promises');
+    const STORAGE_DIR = await getStorageDir();
 
-    // Ensure folder exists (mainly for first chunk)
+    const folderPath = path.resolve(STORAGE_DIR, folder || '');
+    const relative = path.relative(STORAGE_DIR, folderPath);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error("Invalid path");
+
     if (chunkIndex === 0) {
         await fs.mkdir(folderPath, { recursive: true });
     }
@@ -52,40 +87,37 @@ export async function appendChunk(folder, filename, buffer, chunkIndex, totalChu
     const finalPath = path.join(folderPath, filename);
 
     if (chunkIndex === 0) {
-        // Start fresh for first chunk
         await fs.writeFile(partPath, buffer);
     } else {
-        // Append for subsequent chunks
         await fs.appendFile(partPath, buffer);
     }
 
-    // If last chunk, rename to final
     if (chunkIndex === totalChunks - 1) {
         await fs.rename(partPath, finalPath);
     }
 }
 
-// Unified function to get contents of a directory (folders + images)
-export async function listDirectoryContents(relativePath = '', page = 1, limit = 18) {
+export async function listDirectoryContents(relativePath = '', page = 1, limit = 30) {
     try {
-        // Normalize path and prevent traversal
-        const safePath = path.posix.normalize(relativePath).replace(/^(\.\.(\/|\\|$))+/, '');
-        const absPath = path.join(STORAGE_DIR, safePath);
+        const path = await import('path');
+        const fs = await import('fs/promises');
+        const STORAGE_DIR = await getStorageDir();
 
-        if (!absPath.startsWith(STORAGE_DIR)) {
+        const safePath = path.posix.normalize(relativePath).replace(/^(\.\.(\/|\\|$))+/, '');
+        const absPath = path.resolve(STORAGE_DIR, safePath);
+        const relative = path.relative(STORAGE_DIR, absPath);
+
+        if (relative.startsWith('..') || path.isAbsolute(relative)) {
             throw new Error("Invalid path");
         }
 
         await fs.access(absPath);
-
         const items = await fs.readdir(absPath, { withFileTypes: true });
 
-        // Separete folders and images
         const folders = items
             .filter(item => item.isDirectory())
             .map(item => item.name);
 
-        // Helper to format file size
         const formatSize = (bytes) => {
             if (bytes === 0) return '0 B';
             const k = 1024;
@@ -95,28 +127,22 @@ export async function listDirectoryContents(relativePath = '', page = 1, limit =
         };
 
         const imageFiles = await Promise.all(items
-            .filter(item => !item.isDirectory() && !item.name.startsWith('.'))// allow all files, skip hidden
+            .filter(item => !item.isDirectory() && !item.name.startsWith('.'))
             .map(async (item) => {
                 const filePath = path.join(absPath, item.name);
                 const stat = await fs.stat(filePath);
-
-                let createdDate = stat.birthtime;
-
-
                 return {
                     name: item.name,
                     size: formatSize(stat.size),
                     sizeBytes: stat.size,
                     modified: stat.mtime.toISOString(),
-                    created: stat.birthtime.toISOString(), // Basic created time (upload time usually)
+                    created: stat.birthtime.toISOString(),
                     type: item.name.split('.').pop().toLowerCase()
                 };
             }));
 
-        // Sort by created date (newest first)
         imageFiles.sort((a, b) => new Date(b.created) - new Date(a.created));
 
-        // Pagination logic (only for images, folders always show all at top)
         const start = (page - 1) * limit;
         const end = start + limit;
         const paginatedImages = imageFiles.slice(start, end);
@@ -135,10 +161,16 @@ export async function listDirectoryContents(relativePath = '', page = 1, limit =
 
 export async function getImageMeta(folder, filename) {
     try {
-        const folderPath = path.join(STORAGE_DIR, folder || '');
-        const filePath = path.join(folderPath, filename);
+        const path = await import('path');
+        const fs = await import('fs/promises');
+        const exifr = await import('exifr');
+        const STORAGE_DIR = await getStorageDir();
 
-        if (!filePath.startsWith(STORAGE_DIR)) throw new Error("Invalid path");
+        const folderPath = path.resolve(STORAGE_DIR, folder || '');
+        const filePath = path.resolve(folderPath, filename);
+
+        const relative = path.relative(STORAGE_DIR, filePath);
+        if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error("Invalid path");
         await fs.access(filePath);
 
         const stat = await fs.stat(filePath);
@@ -173,10 +205,15 @@ export async function getImageMeta(folder, filename) {
 
 export async function readFileContent(folder, filename) {
     try {
-        const folderPath = path.join(STORAGE_DIR, folder || '');
-        const filePath = path.join(folderPath, filename);
+        const path = await import('path');
+        const fs = await import('fs/promises');
+        const STORAGE_DIR = await getStorageDir();
 
-        if (!filePath.startsWith(STORAGE_DIR)) throw new Error("Invalid path");
+        const folderPath = path.resolve(STORAGE_DIR, folder || '');
+        const filePath = path.resolve(folderPath, filename);
+
+        const relative = path.relative(STORAGE_DIR, filePath);
+        if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error("Invalid path");
         await fs.access(filePath);
 
         const content = await fs.readFile(filePath);
@@ -189,10 +226,15 @@ export async function readFileContent(folder, filename) {
 
 export async function saveFileContent(folder, filename, content) {
     try {
-        const folderPath = path.join(STORAGE_DIR, folder || '');
-        const filePath = path.join(folderPath, filename);
+        const path = await import('path');
+        const fs = await import('fs/promises');
+        const STORAGE_DIR = await getStorageDir();
 
-        if (!filePath.startsWith(STORAGE_DIR)) throw new Error("Invalid path");
+        const folderPath = path.resolve(STORAGE_DIR, folder || '');
+        const filePath = path.resolve(folderPath, filename);
+
+        const relative = path.relative(STORAGE_DIR, filePath);
+        if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error("Invalid path");
 
         // Ensure the file exists before writing to prevent creating new files via this endpoint if desired,
         // or just write it. For editing, it should exist.

@@ -25,11 +25,14 @@ const FolderSchema = new mongoose.Schema({
     isPublic: {
         type: Boolean,
         default: false,
-    }
+    },
+    allowedUsers: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+    }]
 }, { timestamps: true });
 
 // Ensure we can quickly find children of a folder
 FolderSchema.index({ parent: 1 });
-FolderSchema.index({ path: 1 });
 
 export default mongoose.models.Folder || mongoose.model('Folder', FolderSchema);

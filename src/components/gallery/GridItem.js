@@ -58,6 +58,7 @@ export default function GridItem({ img, index, isLast, lastImageRef, currentFold
                     src={imgSrc}
                     alt={imageName}
                     fill
+                    priority={index < 8}
                     sizes="(max-width: 768px) 50vw, (max-width: 1200px) 33vw, 25vw"
                     className={`object-cover transition-all duration-500 group-hover:scale-105 ${isLoaded ? 'opacity-100 blur-0' : 'opacity-0 blur-sm'}`}
                     onLoad={() => setIsLoaded(true)}

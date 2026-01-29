@@ -6,7 +6,7 @@ import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Folder, Loader2 } from 'lucide-react';
+import { Folder, Loader2, Globe, Lock } from 'lucide-react';
 import AdminTools from '../admin/AdminTools';
 import Lightbox from './Lightbox';
 import { getGalleryData } from '@/app/actions';
@@ -96,16 +96,19 @@ export default function GalleryClient({ initialFolders, initialImages, role }) {
         setSelectedFilename(filename);
     }, []);
 
-    // Observer for infinite scroll
+    // Observer for infinite scroll: Triggers NEXT page load BEFORE user reaches bottom (Prefetching)
     const observer = useRef();
     const lastImageRef = useCallback(node => {
         if (isFetchingNextPage) return;
         if (observer.current) observer.current.disconnect();
+
+        // rootMargin '600px' means start loading 600px before the last item enters view
         observer.current = new IntersectionObserver(entries => {
             if (entries[0].isIntersecting && hasNextPage) {
                 fetchNextPage();
             }
-        });
+        }, { rootMargin: '600px' });
+
         if (node) observer.current.observe(node);
     }, [isFetchingNextPage, hasNextPage, fetchNextPage]);
 
@@ -126,30 +129,47 @@ export default function GalleryClient({ initialFolders, initialImages, role }) {
             {folders.length > 0 && (
                 <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4 mb-12">
                     {folders.map(folder => {
-                        const href = currentFolder ? `/?io=${currentFolder}/${folder}` : `/?io=${folder}`;
+                        const name = typeof folder === 'string' ? folder : folder.name;
+                        const relPath = typeof folder === 'string' ? (currentFolder ? `${currentFolder}/${folder}` : folder) : folder.path;
+                        const isPublic = typeof folder === 'string' ? null : folder.isPublic;
+
+                        const href = `/?io=${relPath}`;
+
                         return (
-                            <Link
-                                key={folder}
-                                href={href}
-                                className="group relative p-6 rounded-2xl glass-card border border-glass-border hover:border-purple-500/50 transition-all hover:scale-[1.02]"
-                            >
+                            <div key={relPath} className="relative group">
+                                <Link
+                                    href={href}
+                                    className="flex flex-col items-center gap-3 p-6 rounded-2xl glass-card border border-glass-border hover:border-purple-500/50 transition-all hover:scale-[1.02] h-full"
+                                >
+                                    <div className="relative">
+                                        <Folder size={48} className="text-purple-400 group-hover:text-purple-300 transition-colors" />
+                                        {/* Status Icon at bottom of card */}
+                                        <div className="absolute -bottom-1 -right-1 bg-black/40 backdrop-blur-md p-1 rounded-full border border-white/10">
+                                            {isPublic ? <Globe size={12} className="text-green-400" title="Public" /> : <Lock size={12} className="text-yellow-500" title="Private" />}
+                                        </div>
+                                    </div>
+                                    <span className="font-medium text-lg text-muted-foreground group-hover:text-foreground truncate w-full text-center">{name}</span>
+
+                                    {/* Small indicator text at bottom */}
+                                    <span className={`text-[10px] uppercase tracking-widest font-bold ${isPublic ? 'text-green-500/70' : 'text-yellow-500/70'}`}>
+                                        {isPublic ? 'Public' : 'Private'}
+                                    </span>
+                                </Link>
+
                                 {role === 'admin' && (
-                                    <ItemActionsMenu
-                                        path={currentFolder ? `${currentFolder}/${folder}` : folder}
-                                        isFolder
-                                        onDelete={async () => {
-                                            // Ideally we invalidate query here
-                                            // But for now router.refresh() + refetch()
-                                            await refetch();
-                                            router.refresh();
-                                        }}
-                                    />
+                                    <div className="absolute top-2 right-2 z-10">
+                                        <ItemActionsMenu
+                                            path={relPath}
+                                            isFolder
+                                            isPublic={isPublic}
+                                            onDelete={async () => {
+                                                await refetch();
+                                                router.refresh();
+                                            }}
+                                        />
+                                    </div>
                                 )}
-                                <div className="flex flex-col items-center gap-3">
-                                    <Folder size={48} className="text-purple-400 group-hover:text-purple-300 transition-colors" />
-                                    <span className="font-medium text-lg text-muted-foreground group-hover:text-foreground truncate w-full text-center">{folder}</span>
-                                </div>
-                            </Link>
+                            </div>
                         );
                     })}
                 </div>

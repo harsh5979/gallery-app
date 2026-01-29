@@ -38,10 +38,30 @@ export function SocketProvider({ children, session }) {
             router.refresh();
         });
 
-        socketInstance.on('permission:update', async () => {
-            console.log('Permissions updated, refreshing...');
-            await queryClient.invalidateQueries({ queryKey: ['gallery'] });
-            router.refresh();
+        socketInstance.on('permission:update', async (data) => {
+            console.log('Permissions updated:', data);
+
+            // 1. Target the specific folder if path is provided, otherwise refresh all gallery data
+            if (data?.folderPath) {
+                // Precise invalidation for the folder and its contents
+                await queryClient.invalidateQueries({
+                    queryKey: ['gallery', data.folderPath]
+                });
+                // Also invalidate the root/parent to show the status icon change
+                const parent = data.folderPath.includes('/')
+                    ? data.folderPath.substring(0, data.folderPath.lastIndexOf('/'))
+                    : 'root';
+                await queryClient.invalidateQueries({ queryKey: ['gallery', parent] });
+            } else {
+                await queryClient.invalidateQueries({ queryKey: ['gallery'] });
+            }
+
+            // 2. Refresh RSC only for layout/auth changes (router.refresh is usually slower/more disruptive)
+            // If it's just a permission toggle on a folder, TanStack Query is enough.
+            // Only refresh if it was a bulk update or specifically requested
+            if (data?.isBulk || !data?.folderPath) {
+                router.refresh();
+            }
         });
 
         setSocket(socketInstance);

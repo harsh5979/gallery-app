@@ -73,12 +73,29 @@ export async function getGalleryData(folder = '', page = 1) {
     // But assuming it returns objects with 'name', the relative path is `${folder}/${name}` (cleanly joined).
 
     // data.folders is an array of strings (folder names) from storage.js
+    // 3. Filter and Enrich Subfolders
     const subfolderPaths = data.folders.map(name => folder ? `${folder}/${name}` : name);
     const accessiblePaths = await filterAccessibleFolders(session.id, subfolderPaths);
 
-    // Filter the data.folders array
-    // We only keep folders whose relative path is in accessiblePaths
-    data.folders = data.folders.filter((name, i) => accessiblePaths.includes(subfolderPaths[i]));
+    // Fetch DB info for Public/Private status and Allowed Users
+    const Folder = (await import('@/models/Folder')).default;
+    await (await import('@/lib/db')).default();
+    const dbFolders = await Folder.find({ path: { $in: accessiblePaths } }).select('path isPublic allowedUsers').lean();
+    const dbMap = new Map(dbFolders.map(f => [f.path, f]));
+
+    // Reconstruct folders as objects
+    data.folders = data.folders
+        .map((name, i) => {
+            const path = subfolderPaths[i];
+            const dbInfo = dbMap.get(path);
+            return {
+                name,
+                path,
+                isPublic: dbInfo?.isPublic ?? false,
+                allowedUsers: dbInfo?.allowedUsers?.map(id => id.toString()) || []
+            };
+        })
+        .filter(f => accessiblePaths.includes(f.path));
 
     return data;
 }
@@ -114,17 +131,21 @@ export async function createNewFolder(formData) {
     const folderNames = folderNamesInput.split(',').map(n => n.trim()).filter(Boolean);
 
     try {
+        console.log(`[Action] Creating folders: ${folderNames.join(', ')}`);
         for (const name of folderNames) {
             await createFolder(name);
         }
 
+        console.log(`[Action] Syncing folders to database...`);
         // Sync to DB so rights can be assigned
         await syncFolders();
 
+        console.log(`[Action] Folder creation and sync complete.`);
         revalidatePath('/'); // Refresh gallery list
         revalidateTag('gallery');
         return { success: true };
     } catch (e) {
+        console.error(`[Action] createNewFolder Error:`, e);
         return { error: e.message };
     }
 }

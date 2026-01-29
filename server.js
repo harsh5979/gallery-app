@@ -1,3 +1,7 @@
+// Load environment variables from .env.local
+const { loadEnvConfig } = require('@next/env');
+loadEnvConfig(process.cwd());
+
 const express = require('express');
 const next = require('next');
 const { createServer } = require('http');
@@ -10,7 +14,10 @@ const app = next({ dev });
 const handle = app.getRequestHandler();
 
 // Storage Root for Socket Uploads
-const STORAGE_ROOT = path.join(process.cwd(), 'gallery_storage');
+const customStoragePath = process.env.GALLERY_STORAGE_PATH;
+const STORAGE_ROOT = path.resolve(customStoragePath || path.join(process.cwd(), 'gallery_storage'));
+
+console.log(`> Storage Root: ${STORAGE_ROOT}`);
 
 app.prepare().then(() => {
     const server = express();
@@ -44,28 +51,35 @@ app.prepare().then(() => {
         socket.on('upload_start', async ({ folder, fileName, totalSize }) => {
             try {
                 // Ensure directory exists
-                const targetDir = path.join(STORAGE_ROOT, folder || '');
+                const targetDir = path.resolve(STORAGE_ROOT, folder || '');
+                console.log(`[Upload] Preparing destination: ${targetDir}`);
+
                 // Security check: ensure we don't traverse out of storage
-                if (!targetDir.startsWith(STORAGE_ROOT)) {
+                const relative = path.relative(STORAGE_ROOT, targetDir);
+                if (relative.startsWith('..') || path.isAbsolute(relative)) {
+                    console.error(`[Upload] Path Blocked: ${targetDir} is outside ${STORAGE_ROOT}`);
                     socket.emit('upload_error', { message: 'Invalid path' });
                     return;
                 }
 
                 if (!fs.existsSync(targetDir)) {
+                    console.log(`[Upload] Creating directory: ${targetDir}`);
                     fs.mkdirSync(targetDir, { recursive: true });
                 }
 
                 const filePath = path.join(targetDir, fileName);
+                console.log(`[Upload] Target file: ${filePath}`);
                 currentUpload.path = filePath;
 
                 // Open file for writing (flag 'w')
                 currentUpload.fd = fs.openSync(filePath, 'w');
                 currentUpload.bytesWritten = 0;
 
+                console.log(`[Upload] File opened successfully: ${filePath}`);
                 socket.emit('upload_ready');
             } catch (err) {
-                console.error("Upload Start Error:", err);
-                socket.emit('upload_error', { message: err.message });
+                console.error("[Upload] Start Error:", err);
+                socket.emit('upload_error', { message: `Server error: ${err.code || err.message}` });
             }
         });
 

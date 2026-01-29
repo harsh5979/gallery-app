@@ -8,21 +8,22 @@ import Permission from '@/models/Permission';
 import Folder from '@/models/Folder';
 import { isAdmin, getSession } from '@/lib/auth';
 import { revalidatePath, revalidateTag } from 'next/cache';
-import path from 'path';
-import fs from 'fs/promises';
 import { notifyChange } from '@/lib/events';
 
 // --- Folder Management & Sync ---
 
+// --- Folder Management & Sync ---
+
 async function emitSocketEvent(event, roomId, data) {
+    const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
     try {
-        await fetch('http://localhost:3000/api/socket-notify', {
+        await fetch(`${APP_URL}/api/socket-notify`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ event, roomId, data })
         });
     } catch (e) {
-        console.error("Socket Emit Failed:", e.message);
+        // Silent fail for production socket notifications
     }
 }
 
@@ -30,49 +31,67 @@ export async function syncFolders() {
     if (!await isAdmin()) return { error: 'Unauthorized' };
     await dbConnect();
 
-    const foundFolderIds = new Set();
-    const STORAGE_ROOT = path.join(process.cwd(), 'gallery_storage'); // Ensure definition
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const mongoose = (await import('mongoose')).default;
 
-    // Helper to walk directory
-    async function walk(dir, parentId = null) {
+    const session = await getSession();
+    const STORAGE_ROOT = path.resolve(process.env.GALLERY_STORAGE_PATH || path.join(process.cwd(), 'gallery_storage'));
+
+    try {
+        await fs.access(STORAGE_ROOT);
+    } catch (e) {
+        return { error: 'Storage root not accessible.' };
+    }
+
+    const existingFolders = await Folder.find({});
+    const folderMap = new Map();
+    existingFolders.forEach(f => folderMap.set(f.path, f));
+
+    const foundPaths = new Set();
+    const newFolders = [];
+    const movedFolders = [];
+    const pathToIdMap = new Map();
+    existingFolders.forEach(f => pathToIdMap.set(f.path, f._id.toString()));
+
+    async function walk(dir, parentId = null, parentRelPath = "") {
         let entries;
         try {
             entries = await fs.readdir(dir, { withFileTypes: true });
-        } catch (e) {
-            return; // Directory might not exist
-        }
+        } catch (e) { return; }
 
         for (const entry of entries) {
             if (entry.isDirectory()) {
                 const fullPath = path.join(dir, entry.name);
-                // Calculate relative path for DB (e.g., "vacation", "vacation/2024")
-                const relPath = path.relative(STORAGE_ROOT, fullPath).replace(/\\/g, '/');
+                const relPath = parentRelPath ? `${parentRelPath}/${entry.name}` : entry.name;
+                foundPaths.add(relPath);
 
-                // Find or Create Folder Record
-                let folder = await Folder.findOne({ path: relPath });
-                if (!folder) {
-                    // Default owner: Admin? Or system? 
-                    // Let's assign to the first admin found or current user
-                    const session = await getSession();
-                    folder = await Folder.create({
+                let folderObj = folderMap.get(relPath);
+                let currentId;
+
+                if (!folderObj) {
+                    const newId = new mongoose.Types.ObjectId();
+                    newFolders.push({
+                        _id: newId,
                         name: entry.name,
                         path: relPath,
                         parent: parentId,
-                        owner: session.id, // Assign to current admin
+                        owner: session.id,
                         isPublic: true,
                     });
+                    pathToIdMap.set(relPath, newId.toString());
+                    currentId = newId;
                 } else {
-                    if (folder.parent !== parentId) {
-                        // Update parent if moved (re-sync hierarchy)
-                        folder.parent = parentId;
-                        await folder.save();
+                    currentId = folderObj._id;
+                    const dbParent = folderObj.parent ? folderObj.parent.toString() : null;
+                    const expectedParent = parentId ? parentId.toString() : null;
+
+                    if (dbParent !== expectedParent) {
+                        movedFolders.push({ id: currentId, parent: parentId });
                     }
+                    pathToIdMap.set(relPath, currentId.toString());
                 }
-
-                foundFolderIds.add(folder._id.toString());
-
-                // Recurse
-                await walk(fullPath, folder._id);
+                await walk(fullPath, currentId, relPath);
             }
         }
     }
@@ -80,61 +99,115 @@ export async function syncFolders() {
     try {
         await walk(STORAGE_ROOT);
 
-        // Prune: Delete folders in DB that were NOT found on disk
-        // Note: This relies on a full walk. If walk fails partway, we shouldn't prune.
-        if (foundFolderIds.size > 0) {
-            // We only delete if we found at least something, to be safe? 
-            // Or if directory is empty, we delete all?
-            // Let's be safe: delete those NOT in foundFolderIds
-            await Folder.deleteMany({ _id: { $nin: Array.from(foundFolderIds) } });
-        } else {
-            // If storage is empty (no folders), delete all folders in DB?
-            // Yes, if readdir turned up nothing.
-            // But we need to distinguish "empty dir" from "error reading".
-            // walk returns void, simple check.
-            const rootEntries = await fs.readdir(STORAGE_ROOT).catch(() => []);
-            if (rootEntries.length === 0) {
-                await Folder.deleteMany({});
-            }
+        if (newFolders.length > 0) await Folder.insertMany(newFolders);
+
+        if (movedFolders.length > 0) {
+            const bulkOps = movedFolders.map(m => ({
+                updateOne: {
+                    filter: { _id: m.id },
+                    update: { parent: m.parent }
+                }
+            }));
+            await Folder.bulkWrite(bulkOps);
         }
 
-        return { success: true };
+        const idsToDelete = [];
+        for (const [path, folder] of folderMap) {
+            if (!foundPaths.has(path)) idsToDelete.push(folder._id);
+        }
+
+        if (idsToDelete.length > 0) {
+            await Folder.deleteMany({ _id: { $in: idsToDelete } });
+        }
+
+        revalidatePath('/admin');
+        revalidatePath('/');
+        revalidateTag('gallery');
+
+        return { success: true, added: newFolders.length, updated: movedFolders.length, removed: idsToDelete.length };
     } catch (e) {
-        console.error("Sync Error:", e);
         return { error: e.message };
     }
 }
 
-
-export async function toggleFolderPublic(folderId, isPublic) {
+export async function toggleFolderPublic(folderIdOrPath, isPublic) {
     if (!await isAdmin()) return { error: 'Unauthorized' };
     await dbConnect();
 
-    const updated = await Folder.findByIdAndUpdate(folderId, { isPublic }, { new: true });
+    const mongoose = (await import('mongoose')).default;
+    const query = mongoose.Types.ObjectId.isValid(folderIdOrPath) ? { _id: folderIdOrPath } : { path: folderIdOrPath };
+    const updated = await Folder.findOneAndUpdate(query, { isPublic }, { new: true });
 
-    if (!updated) {
-        return { error: 'Folder not found' };
+    if (!updated) return { error: 'Folder not found' };
+
+    revalidatePath('/admin/permissions');
+    revalidatePath('/');
+    revalidateTag('gallery');
+    emitSocketEvent('permission:update', null, { folderPath: updated.path });
+
+    return { success: true };
+}
+
+export async function updateFolderAccess(folderId, isPublic, allowedUsers = [], recursive = false) {
+    if (!await isAdmin()) return { error: 'Unauthorized' };
+    await dbConnect();
+
+    const updated = await Folder.findByIdAndUpdate(folderId, { isPublic, allowedUsers }, { new: true });
+    if (!updated) return { error: 'Folder not found' };
+
+    if (recursive) {
+        const escapedPath = updated.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        await Folder.updateMany(
+            { path: { $regex: `^${escapedPath}/` } },
+            { isPublic, allowedUsers }
+        );
     }
 
-    revalidatePath('/admin');
-    revalidatePath('/admin/permissions'); // Explicitly revalidate this page
+    revalidatePath('/admin/permissions');
     revalidatePath('/');
     revalidateTag('gallery');
 
-    // Notify all users via Socket to refresh (Fire and forget)
-    emitSocketEvent('permission:update', null, { folderId });
-
+    emitSocketEvent('permission:update', null, { folderPath: updated.path, folderId, isRecursive: recursive });
     notifyChange('permission');
+
     return { success: true };
+}
+
+export async function bulkToggleFoldersPublic(folderIds, isPublic, recursive = false) {
+    if (!await isAdmin()) return { error: 'Unauthorized' };
+    await dbConnect();
+
+    try {
+        if (recursive) {
+            const folders = await Folder.find({ _id: { $in: folderIds } }).select('path');
+            const paths = folders.map(f => f.path);
+            const escapedPaths = paths.map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+            const regex = new RegExp(`^(${escapedPaths.map(p => `${p}/`).join('|')})`);
+
+            await Folder.updateMany(
+                { $or: [{ _id: { $in: folderIds } }, { path: { $regex: regex } }] },
+                { isPublic }
+            );
+        } else {
+            await Folder.updateMany({ _id: { $in: folderIds } }, { isPublic });
+        }
+
+        revalidatePath('/admin/permissions');
+        revalidatePath('/');
+        revalidateTag('gallery');
+        emitSocketEvent('permission:update', null, { isBulk: true });
+        notifyChange('permission');
+
+        return { success: true };
+    } catch (e) {
+        return { error: e.message };
+    }
 }
 
 export async function getAllFolders() {
     if (!await isAdmin()) return { error: 'Unauthorized' };
     await dbConnect();
-    // Fetch all folders, sorted by path
-    const folders = await Folder.find({}).sort({ path: 1 });
-    console.log(`[Admin] getAllFolders Found: ${folders.length} folders.`);
-    folders.forEach(f => console.log(` - ${f.path} (ID: ${f._id}) Public: ${f.isPublic}`));
+    const folders = await Folder.find({}).sort({ path: 1 }).lean();
     return { success: true, data: JSON.parse(JSON.stringify(folders)) };
 }
 
