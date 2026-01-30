@@ -84,31 +84,39 @@ export default function SocketUploader({ currentPath, onComplete }) {
                 await new Promise((resolve, reject) => {
                     const ackHandler = () => {
                         inFlight--;
-                        const chunksCompleted = Math.ceil((file.size - (totalChunks - (chunksSent - inFlight)) * CHUNK_SIZE) / CHUNK_SIZE);
-                        // Simplified progress:
                         const overallProgress = Math.round(((fIdx + (chunksSent - inFlight) / totalChunks) / selectedFiles.length) * 100);
                         setProgress(overallProgress);
 
                         if (chunksSent < totalChunks) {
                             uploadNextChunk();
                         } else if (inFlight === 0) {
-                            socket.off('upload_ack', ackHandler);
-                            socket.off('upload_error', errorHandler);
-                            resolve();
+                            // All chunks sent and acknowledged, now tell server to wrap up
+                            socket.emit('upload_end');
                         }
                     };
-                    const errorHandler = (err) => {
-                        socket.off('upload_ack', ackHandler);
-                        socket.off('upload_error', errorHandler);
+
+                    const onFinished = () => {
+                        cleanup();
+                        resolve();
+                    };
+
+                    const onStartupError = (err) => {
+                        cleanup();
                         reject(new Error(err.message || 'Upload failed'));
                     };
+
+                    const cleanup = () => {
+                        socket.off('upload_ack', ackHandler);
+                        socket.off('upload_complete', onFinished);
+                        socket.off('upload_error', onStartupError);
+                    };
+
                     socket.on('upload_ack', ackHandler);
-                    socket.on('upload_error', errorHandler);
+                    socket.on('upload_complete', onFinished);
+                    socket.on('upload_error', onStartupError);
 
                     uploadNextChunk();
                 });
-
-                socket.emit('upload_end');
             }
 
             setStatus('All uploads completed!');

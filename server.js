@@ -123,9 +123,9 @@ app.prepare().then(() => {
         });
 
         socket.on('disconnect', () => {
-            if (currentUpload.fd) {
-                fs.closeSync(currentUpload.fd);
-                currentUpload.fd = null;
+            if (currentUpload.stream) {
+                currentUpload.stream.destroy();
+                currentUpload.stream = null;
             }
             console.log('Client disconnected:', socket.id);
         });

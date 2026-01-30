@@ -59,6 +59,18 @@ export default function AdminTools({ currentFolder }) {
     const [selectedIndices, setSelectedIndices] = useState(new Set());
     const [visibleLimit, setVisibleLimit] = useState(10); // Start with 10
 
+    // Auto-close on completion
+    useEffect(() => {
+        if (!isUploading && uploadProgress.total > 0 && uploadProgress.current === uploadProgress.total && uploadProgress.failed === 0) {
+            const timer = setTimeout(() => {
+                setUploadProgress({ total: 0, current: 0, success: 0, failed: 0, currentFile: '' });
+                setPendingFiles([]);
+                setIsUploadConfirmOpen(false);
+            }, 3000); // Auto close after 3s
+            return () => clearTimeout(timer);
+        }
+    }, [isUploading, uploadProgress]);
+
     async function handleFileSelect(e, type) {
         const files = Array.from(e.target.files || []);
         if (files.length === 0) return;
@@ -202,7 +214,13 @@ export default function AdminTools({ currentFolder }) {
                         let chunksSent = 0;
 
                         const uploadNextChunk = async () => {
-                            if (chunksSent >= totalChunks) return;
+                            if (chunksSent >= totalChunks) {
+                                // If all sent but still inFlight, we wait for acks
+                                if (inFlight === 0) {
+                                    socket.emit('upload_end');
+                                }
+                                return;
+                            }
 
                             const chunkIdx = chunksSent++;
                             const start = chunkIdx * CHUNK_SIZE;
@@ -218,24 +236,26 @@ export default function AdminTools({ currentFolder }) {
                             }
                         };
 
-                        const ackHandler = () => {
+                        // Assigned to the outer variable for cleanup
+                        ackHandler = () => {
                             inFlight--;
-                            if (chunksSent < totalChunks) {
-                                uploadNextChunk();
-                            }
 
                             const sentSize = Math.min(chunksSent * CHUNK_SIZE, file.size);
                             setUploadProgress(prev => ({
                                 ...prev,
                                 currentFile: `${file.name} (${formatSize(sentSize)} / ${formatSize(file.size)})`
                             }));
+
+                            if (chunksSent < totalChunks) {
+                                uploadNextChunk();
+                            } else if (inFlight === 0) {
+                                // All chunks acknowledged
+                                socket.emit('upload_end');
+                            }
                         };
 
                         socket.on('upload_ack', ackHandler);
                         uploadNextChunk();
-
-                        // We wait for 'upload_complete' which is emitted by server after stream finish
-                        // This is handled by the higher-level onComplete listener
                     } catch (e) {
                         cleanup();
                         reject(e);
@@ -251,7 +271,8 @@ export default function AdminTools({ currentFolder }) {
                 const onError = (err) => {
                     cleanup();
                     console.error("Socket Upload Error:", err);
-                    setUploadProgress(prev => ({ ...prev, failed: prev.failed + 1 }));
+                    // Always increment current so the bar moves
+                    setUploadProgress(prev => ({ ...prev, current: prev.current + 1, failed: prev.failed + 1 }));
                     resolve();
                 };
 
@@ -259,7 +280,7 @@ export default function AdminTools({ currentFolder }) {
                     socket.off('upload_ready', onReady);
                     socket.off('upload_complete', onComplete);
                     socket.off('upload_error', onError);
-                    socket.off('upload_ack', ackHandler); // We need to define ackHandler so we can off it
+                    if (ackHandler) socket.off('upload_ack', ackHandler);
                 };
 
                 // Redefining to includes ackHandler in scope
