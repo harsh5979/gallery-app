@@ -25,16 +25,15 @@ export async function checkPermission(userId, resource, accessType = 'read') {
     // Resolve Folder
     let folder;
     if (typeof resource === 'string') {
+        const normalizedPath = resource.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
         // If root
-        if (!resource || resource === '/' || resource === '') {
+        if (normalizedPath === '') {
             // Access to root? Maybe allow read default? 
             // System policy: Root is public-ish or handled by specific root perm?
             // Let's assume Root is restricted unless permitted.
-            // But wait, "path" in DB for root?
-            // Usually we don't store root folder in DB, or we store it as path="/"
-            folder = await Folder.findOne({ path: resource });
+            folder = await Folder.findOne({ path: '' });
         } else {
-            folder = await Folder.findOne({ path: resource });
+            folder = await Folder.findOne({ path: normalizedPath });
         }
     } else {
         folder = resource;

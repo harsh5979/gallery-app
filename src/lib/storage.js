@@ -103,15 +103,23 @@ export async function listDirectoryContents(relativePath = '', page = 1, limit =
         const fs = await import('fs/promises');
         const STORAGE_DIR = await getStorageDir();
 
-        const safePath = path.posix.normalize(relativePath).replace(/^(\.\.(\/|\\|$))+/, '');
-        const absPath = path.resolve(STORAGE_DIR, safePath);
+        // Normalize relativePath to use forward slashes and remove leading/trailing slashes
+        const normalizedRel = relativePath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+        const absPath = path.resolve(STORAGE_DIR, normalizedRel);
         const relative = path.relative(STORAGE_DIR, absPath);
 
         if (relative.startsWith('..') || path.isAbsolute(relative)) {
+            console.error("[Storage] listDirectoryContents Blocked Outside Root:", absPath);
             throw new Error("Invalid path");
         }
 
-        await fs.access(absPath);
+        try {
+            await fs.access(absPath);
+        } catch (e) {
+            console.warn("[Storage] Folder not found:", absPath);
+            return { folders: [], images: [], hasMore: false, totalImages: 0 };
+        }
+
         const items = await fs.readdir(absPath, { withFileTypes: true });
 
         const folders = items
@@ -126,20 +134,25 @@ export async function listDirectoryContents(relativePath = '', page = 1, limit =
             return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         };
 
-        const imageFiles = await Promise.all(items
-            .filter(item => !item.isDirectory() && !item.name.startsWith('.'))
-            .map(async (item) => {
-                const filePath = path.join(absPath, item.name);
-                const stat = await fs.stat(filePath);
-                return {
-                    name: item.name,
-                    size: formatSize(stat.size),
-                    sizeBytes: stat.size,
-                    modified: stat.mtime.toISOString(),
-                    created: stat.birthtime.toISOString(),
-                    type: item.name.split('.').pop().toLowerCase()
-                };
-            }));
+        const imageFiles = [];
+        for (const item of items) {
+            if (!item.isDirectory() && !item.name.startsWith('.')) {
+                try {
+                    const filePath = path.join(absPath, item.name);
+                    const stat = await fs.stat(filePath);
+                    imageFiles.push({
+                        name: item.name,
+                        size: formatSize(stat.size),
+                        sizeBytes: stat.size,
+                        modified: stat.mtime.toISOString(),
+                        created: stat.birthtime.toISOString(),
+                        type: item.name.split('.').pop().toLowerCase()
+                    });
+                } catch (e) {
+                    console.error("[Storage] Error statting file:", item.name, e);
+                }
+            }
+        }
 
         imageFiles.sort((a, b) => new Date(b.created) - new Date(a.created));
 

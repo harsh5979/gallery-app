@@ -43,13 +43,14 @@ export function SocketProvider({ children, session }) {
 
             // 1. Target the specific folder if path is provided, otherwise refresh all gallery data
             if (data?.folderPath) {
+                const normalized = data.folderPath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
                 // Precise invalidation for the folder and its contents
                 await queryClient.invalidateQueries({
-                    queryKey: ['gallery', data.folderPath]
+                    queryKey: ['gallery', normalized || 'root']
                 });
                 // Also invalidate the root/parent to show the status icon change
-                const parent = data.folderPath.includes('/')
-                    ? data.folderPath.substring(0, data.folderPath.lastIndexOf('/'))
+                const parent = normalized.includes('/')
+                    ? normalized.substring(0, normalized.lastIndexOf('/'))
                     : 'root';
                 await queryClient.invalidateQueries({ queryKey: ['gallery', parent] });
             } else {

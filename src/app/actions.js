@@ -34,7 +34,11 @@ export async function logout() {
 import { unstable_cache } from 'next/cache';
 
 const getCachedGalleryData = unstable_cache(
-    async (folder, page) => listDirectoryContents(folder, page),
+    async (folder, page) => {
+        // Double check normalization here as well
+        const normalized = folder ? folder.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') : '';
+        return listDirectoryContents(normalized, page);
+    },
     ['gallery-data'],
     { tags: ['gallery'] }
 );
@@ -52,32 +56,24 @@ export async function getGalleryData(folder = '', page = 1) {
 
     // 1. Check access to CURRENT folder
     const { checkPermission, filterAccessibleFolders } = await import('@/lib/permissions');
-    const canRead = await checkPermission(session.id, folder, 'read');
+
+    // Normalize folder: trim slashes, convert to posix style if needed
+    const normalizedFolder = folder ? folder.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') : '';
+
+    const canRead = await checkPermission(session.id, normalizedFolder, 'read');
     if (!canRead) {
         throw new Error("Access Denied");
     }
 
     // 2. Get Data from Storage (FS)
-    const data = await getCachedGalleryData(folder, page);
+    const data = await getCachedGalleryData(normalizedFolder, page);
 
-    // 3. Filter Subfolders
-    // data.folders is array of strings (names) or objects? 
-    // listDirectoryContents returns names usually or objects with names.
-    // Let's assume listDirectoryContents returns { folders: [{name: 'foo', ...}], images: [...] }
-    // We need to construct full relative paths for the filter
-
-    // Wait, listDirectoryContents usage in storage.js:
-    // returns { folders: [{ name, path, ... }], images: ... }
-    // Actually typically just name or relative path.
-    // I need to check listDirectoryContents output format.
-    // But assuming it returns objects with 'name', the relative path is `${folder}/${name}` (cleanly joined).
-
-    // data.folders is an array of strings (folder names) from storage.js
     // 3. Filter and Enrich Subfolders
-    const subfolderPaths = data.folders.map(name => folder ? `${folder}/${name}` : name);
+    // data.folders is an array of folder names (strings)
+    const subfolderPaths = data.folders.map(name => normalizedFolder ? `${normalizedFolder}/${name}` : name);
     const accessiblePaths = await filterAccessibleFolders(session.id, subfolderPaths);
 
-    // Fetch DB info for Public/Private status and Allowed Users
+    // Fetch DB info
     const Folder = (await import('@/models/Folder')).default;
     await (await import('@/lib/db')).default();
     const dbFolders = await Folder.find({ path: { $in: accessiblePaths } }).select('path isPublic allowedUsers').lean();
@@ -96,6 +92,8 @@ export async function getGalleryData(folder = '', page = 1) {
             };
         })
         .filter(f => accessiblePaths.includes(f.path));
+
+    return data;
 
     return data;
 }

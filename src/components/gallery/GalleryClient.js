@@ -21,7 +21,11 @@ export default function GalleryClient({ initialFolders, initialImages, role }) {
     const queryClient = useQueryClient();
     const searchParams = useSearchParams();
     const router = useRouter();
-    const currentFolder = searchParams.get('io');
+    const currentFolder = useMemo(() => {
+        const io = searchParams.get('io');
+        if (!io) return '';
+        return io.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    }, [searchParams]);
 
     // Local state for preview to avoid RSC requests on URL change
     const [selectedFilename, setSelectedFilename] = useState(searchParams.get('preview'));

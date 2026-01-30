@@ -28,7 +28,8 @@ export default function BreadcrumbsBar({ currentFolder }) {
     }, []);
 
     // Breadcrumb Logic
-    const breadcrumbs = currentFolder ? currentFolder.split('/') : [];
+    const normalizedFolder = currentFolder ? currentFolder.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') : '';
+    const breadcrumbs = normalizedFolder ? normalizedFolder.split('/').filter(Boolean) : [];
 
     return (
         <div
