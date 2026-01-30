@@ -43,75 +43,82 @@ app.prepare().then(() => {
 
         // 2. Upload Logic
         let currentUpload = {
-            fd: null,
+            stream: null,
             path: null,
-            bytesWritten: 0
+            bytesWritten: 0,
+            roomId: null
         };
 
-        socket.on('upload_start', async ({ folder, fileName, totalSize }) => {
+        socket.on('upload_start', async ({ folder, fileName, totalSize, roomId }) => {
             try {
-                // Ensure directory exists
                 const targetDir = path.resolve(STORAGE_ROOT, folder || '');
-                console.log(`[Upload] Preparing destination: ${targetDir}`);
-
-                // Security check: ensure we don't traverse out of storage
                 const relative = path.relative(STORAGE_ROOT, targetDir);
                 if (relative.startsWith('..') || path.isAbsolute(relative)) {
-                    console.error(`[Upload] Path Blocked: ${targetDir} is outside ${STORAGE_ROOT}`);
                     socket.emit('upload_error', { message: 'Invalid path' });
                     return;
                 }
 
                 if (!fs.existsSync(targetDir)) {
-                    console.log(`[Upload] Creating directory: ${targetDir}`);
                     fs.mkdirSync(targetDir, { recursive: true });
                 }
 
                 const filePath = path.join(targetDir, fileName);
-                console.log(`[Upload] Target file: ${filePath}`);
                 currentUpload.path = filePath;
+                currentUpload.roomId = roomId;
 
-                // Open file for writing (flag 'w')
-                currentUpload.fd = fs.openSync(filePath, 'w');
+                // Use a write stream for efficiency and low memory overhead
+                currentUpload.stream = fs.createWriteStream(filePath);
                 currentUpload.bytesWritten = 0;
 
-                console.log(`[Upload] File opened successfully: ${filePath}`);
+                currentUpload.stream.on('error', (err) => {
+                    console.error("[Upload Stream Error]", err);
+                    socket.emit('upload_error', { message: `Stream error: ${err.message}` });
+                });
+
                 socket.emit('upload_ready');
             } catch (err) {
-                console.error("[Upload] Start Error:", err);
-                socket.emit('upload_error', { message: `Server error: ${err.code || err.message}` });
+                console.error("[Upload Start Error]:", err);
+                socket.emit('upload_error', { message: `Server error: ${err.message}` });
             }
         });
 
-        socket.on('upload_chunk', async (chunk) => {
-            if (!currentUpload.fd) return;
-            try {
-                // Determine buffer
-                const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        socket.on('upload_chunk', (chunk) => {
+            if (!currentUpload.stream) return;
+            const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
 
-                fs.writeSync(currentUpload.fd, buffer);
-                currentUpload.bytesWritten += buffer.length;
+            const canWrite = currentUpload.stream.write(buffer);
+            currentUpload.bytesWritten += buffer.length;
 
-                socket.emit('upload_progress', { written: currentUpload.bytesWritten });
-                socket.emit('upload_ack'); // Acknowledge receipt so client sends next
-            } catch (err) {
-                console.error("Upload Chunk Error:", err);
-                socket.emit('upload_error', { message: err.message });
+            if (!canWrite) {
+                // Backpressure: wait for drain if buffer is full
+                currentUpload.stream.once('drain', () => {
+                    socket.emit('upload_ack');
+                });
+            } else {
+                // Immediate ack for speed (pipelining)
+                socket.emit('upload_ack');
             }
         });
 
         socket.on('upload_end', () => {
-            if (currentUpload.fd) {
-                fs.closeSync(currentUpload.fd);
-                currentUpload.fd = null;
-                console.log("Upload finished:", currentUpload.path);
+            if (currentUpload.stream) {
+                currentUpload.stream.end();
+                currentUpload.stream.once('finish', () => {
+                    const finalPath = currentUpload.path;
+                    const finalRoomId = currentUpload.roomId;
 
-                // Notify completion
-                socket.emit('upload_complete', { path: currentUpload.path });
+                    socket.emit('upload_complete', { path: finalPath });
 
-                // Trigger revalidation if possible within next? 
-                // Hard to trigger 'revalidatePath' from here easily without API call.
-                // We'll let the client trigger a refresh or call a server action to finalize.
+                    // Notify everyone (or room) to refresh
+                    const notifyData = { event: 'gallery:refresh', data: { path: finalPath } };
+                    if (finalRoomId) {
+                        io.to(finalRoomId).emit('gallery:refresh', notifyData.data);
+                    } else {
+                        io.emit('gallery:refresh', notifyData.data);
+                    }
+
+                    currentUpload.stream = null;
+                });
             }
         });
 

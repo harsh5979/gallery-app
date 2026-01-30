@@ -19,7 +19,7 @@ server {
     server_name $DOMAIN;
 
     # Increase body size for upload
-    client_max_body_size 5000M;
+    client_max_body_size 30000M;
 
     location / {
         proxy_pass http://localhost:$APP_PORT;
@@ -31,6 +31,12 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+
+        # Timeouts for large uploads
+        proxy_read_timeout 3600;
+        proxy_connect_timeout 3600;
+        proxy_send_timeout 3600;
+        send_timeout 3600;
     }
 
     # Cache static files

@@ -41,6 +41,7 @@ export async function GET(request, { params }) {
         else if (['gif'].includes(ext)) contentType = 'image/gif';
         else if (['webp'].includes(ext)) contentType = 'image/webp';
         else if (['mp4'].includes(ext)) contentType = 'video/mp4';
+        else if (ext === 'pdf') contentType = 'application/pdf';
 
         // Serve file
         return new NextResponse(fileBuffer, {

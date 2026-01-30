@@ -158,7 +158,7 @@ export async function updateFolderAccess(folderId, isPublic, allowedUsers = [], 
     if (recursive) {
         const escapedPath = updated.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         await Folder.updateMany(
-            { path: { $regex: `^${escapedPath}/` } },
+            { path: new RegExp(`^${escapedPath}/`) },
             { isPublic, allowedUsers }
         );
     }
@@ -180,14 +180,20 @@ export async function bulkToggleFoldersPublic(folderIds, isPublic, recursive = f
     try {
         if (recursive) {
             const folders = await Folder.find({ _id: { $in: folderIds } }).select('path');
-            const paths = folders.map(f => f.path);
-            const escapedPaths = paths.map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-            const regex = new RegExp(`^(${escapedPaths.map(p => `${p}/`).join('|')})`);
 
-            await Folder.updateMany(
-                { $or: [{ _id: { $in: folderIds } }, { path: { $regex: regex } }] },
-                { isPublic }
-            );
+            // To avoid "Regular expression is invalid: pattern string is longer than the limit" (Location51091),
+            // we process updateMany in smaller batches of paths.
+            const BATCH_SIZE = 50;
+            for (let i = 0; i < folders.length; i += BATCH_SIZE) {
+                const batch = folders.slice(i, i + BATCH_SIZE);
+                const escapedPaths = batch.map(f => f.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+                const regex = new RegExp(`^(${escapedPaths.map(p => `${p}/`).join('|')})`);
+
+                await Folder.updateMany(
+                    { $or: [{ _id: { $in: batch.map(f => f._id) } }, { path: { $regex: regex } }] },
+                    { isPublic }
+                );
+            }
         } else {
             await Folder.updateMany({ _id: { $in: folderIds } }, { isPublic });
         }

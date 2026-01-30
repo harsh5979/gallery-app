@@ -13,84 +13,110 @@ export default function SocketUploader({ currentPath, onComplete }) {
     const [status, setStatus] = useState('');
 
     const handleFileSelect = async (e) => {
-        const file = e.target.files?.[0];
-        if (!file || !socket) return;
+        const selectedFiles = Array.from(e.target.files);
+        if (selectedFiles.length === 0 || !socket) return;
 
         setUploading(true);
-        setStatus('Starting upload...');
+        setStatus(`Preparing ${selectedFiles.length} files...`);
         setProgress(0);
 
-        // Chunk size: 1MB
-        const CHUNK_SIZE = 1 * 1024 * 1024;
-        const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-
-        socket.emit('upload_start', {
-            folder: currentPath,
-            fileName: file.name,
-            totalSize: file.size
-        });
-
-        const uploadChunk = async (index) => {
-            if (index >= totalChunks) {
-                socket.emit('upload_end');
-                return;
-            }
-
-            const start = index * CHUNK_SIZE;
-            const end = Math.min(start + CHUNK_SIZE, file.size);
-            const chunk = file.slice(start, end); // Blob slicing
-
-            // Convert blob to buffer/arraybuffer
-            const buffer = await chunk.arrayBuffer();
-
-            socket.emit('upload_chunk', buffer); // Send raw buffer
-
-            // Wait for ack? 
-            // Our server logic emits 'upload_ack' or we can just stream.
-            // For reliability, waiting for ack is better but slower. 
-            // Let's rely on event listener for flow control or just blast if local.
-            // Actually, server sends 'upload_ack'.
-        };
-
-        // We need to listen to acks to send next chunk to avoid flooding
-        const onAck = () => {
-            const nextIndex = Math.ceil((file.slice(0, progress + CHUNK_SIZE).size) / CHUNK_SIZE);
-            // This logic is tricky with async state. 
-            // Better: use a loop with await inside if we can promisify the ack, 
-            // or just a recursive function driven by events.
-        };
-
-        // Simplified approach: Loop with Promisified Ack
         try {
-            for (let i = 0; i < totalChunks; i++) {
-                const start = i * CHUNK_SIZE;
-                const end = Math.min(start + CHUNK_SIZE, file.size);
-                const chunk = file.slice(start, end);
-                const buffer = await chunk.arrayBuffer();
+            for (let fIdx = 0; fIdx < selectedFiles.length; fIdx++) {
+                const file = selectedFiles[fIdx];
+                // Maintain folder structure if webkitRelativePath is available
+                // e.g. "myfolder/inner/file.jpg"
+                const relativePath = file.webkitRelativePath || file.name;
+                const fileName = relativePath.split('/').pop();
+                const subPath = relativePath.split('/').slice(0, -1).join('/');
+
+                // Final destination folder combining currentPath and subPath
+                const targetFolder = subPath ? (currentPath ? `${currentPath}/${subPath}` : subPath) : currentPath;
+
+                setStatus(`Uploading [${fIdx + 1}/${selectedFiles.length}] ${fileName}...`);
+
+                // Chunk size: 1MB
+                const CHUNK_SIZE = 1 * 1024 * 1024;
+                const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
 
                 await new Promise((resolve, reject) => {
-                    socket.emit('upload_chunk', buffer);
-                    const ackHandler = () => {
-                        socket.off('upload_ack', ackHandler);
+                    socket.emit('upload_start', {
+                        folder: targetFolder,
+                        fileName: fileName,
+                        totalSize: file.size
+                    });
+
+                    const readyHandler = () => {
+                        socket.off('upload_ready', readyHandler);
                         socket.off('upload_error', errorHandler);
                         resolve();
                     };
                     const errorHandler = (err) => {
-                        socket.off('upload_ack', ackHandler);
+                        socket.off('upload_ready', readyHandler);
                         socket.off('upload_error', errorHandler);
-                        reject(err);
+                        reject(new Error(err.message || 'Error starting upload'));
                     };
-                    socket.on('upload_ack', ackHandler);
+                    socket.on('upload_ready', readyHandler);
                     socket.on('upload_error', errorHandler);
                 });
 
-                const currentProgress = Math.round(((i + 1) / totalChunks) * 100);
-                setProgress(currentProgress);
-                setStatus(`Uploading... ${currentProgress}%`);
+                const maxInFlight = 8;
+                let inFlight = 0;
+                let chunksSent = 0;
+
+                const uploadNextChunk = async () => {
+                    if (chunksSent >= totalChunks) return;
+
+                    const chunkIdx = chunksSent++;
+                    const start = chunkIdx * CHUNK_SIZE;
+                    const end = Math.min(start + CHUNK_SIZE, file.size);
+                    const chunk = file.slice(start, end);
+                    const buffer = await chunk.arrayBuffer();
+
+                    inFlight++;
+                    socket.emit('upload_chunk', buffer);
+
+                    // If we have room in the window, send next one immediately
+                    if (inFlight < maxInFlight) {
+                        uploadNextChunk();
+                    }
+                };
+
+                await new Promise((resolve, reject) => {
+                    const ackHandler = () => {
+                        inFlight--;
+                        const chunksCompleted = Math.ceil((file.size - (totalChunks - (chunksSent - inFlight)) * CHUNK_SIZE) / CHUNK_SIZE);
+                        // Simplified progress:
+                        const overallProgress = Math.round(((fIdx + (chunksSent - inFlight) / totalChunks) / selectedFiles.length) * 100);
+                        setProgress(overallProgress);
+
+                        if (chunksSent < totalChunks) {
+                            uploadNextChunk();
+                        } else if (inFlight === 0) {
+                            socket.off('upload_ack', ackHandler);
+                            socket.off('upload_error', errorHandler);
+                            resolve();
+                        }
+                    };
+                    const errorHandler = (err) => {
+                        socket.off('upload_ack', ackHandler);
+                        socket.off('upload_error', errorHandler);
+                        reject(new Error(err.message || 'Upload failed'));
+                    };
+                    socket.on('upload_ack', ackHandler);
+                    socket.on('upload_error', errorHandler);
+
+                    uploadNextChunk();
+                });
+
+                socket.emit('upload_end');
             }
 
-            socket.emit('upload_end');
-            setStatus('Finalizing...');
+            setStatus('All uploads completed!');
+            setTimeout(() => {
+                setUploading(false);
+                if (onComplete) onComplete();
+            }, 500); // Shorter delay
+
         } catch (err) {
             console.error(err);
             setStatus('Error: ' + err.message);
@@ -116,6 +142,9 @@ export default function SocketUploader({ currentPath, onComplete }) {
                     type="file"
                     onChange={handleFileSelect}
                     disabled={uploading}
+                    webkitdirectory="true"
+                    directory="true"
+                    multiple
                     className="file:bg-blue-600 file:border-none file:text-white file:px-4 file:py-2 file:rounded hover:file:bg-blue-700"
                 />
                 {uploading && (

@@ -10,18 +10,61 @@ import { Folder, Loader2, Globe, Lock } from 'lucide-react';
 import AdminTools from '../admin/AdminTools';
 import Lightbox from './Lightbox';
 import { getGalleryData } from '@/app/actions';
+import { useSocket } from '@/providers/SocketProvider';
 import BreadcrumbsBar from '../layout/BreadcrumbsBar';
 import GridItem from './GridItem';
 import ItemActionsMenu from './ItemActionsMenu';
 import AccessRestricted from '../errors/AccessRestricted';
 
 export default function GalleryClient({ initialFolders, initialImages, role }) {
+    const socket = useSocket();
+    const queryClient = useQueryClient();
     const searchParams = useSearchParams();
     const router = useRouter();
     const currentFolder = searchParams.get('io');
 
     // Local state for preview to avoid RSC requests on URL change
     const [selectedFilename, setSelectedFilename] = useState(searchParams.get('preview'));
+
+    // 1. Setup Infinite Query
+    const query = useInfiniteQuery({
+        queryKey: ['gallery', currentFolder || 'root'],
+        queryFn: async ({ pageParam = 1 }) => {
+            const res = await getGalleryData(currentFolder || '', pageParam);
+            return res;
+        },
+        getNextPageParam: (lastPage, allPages) => {
+            return lastPage.hasMore ? allPages.length + 1 : undefined;
+        },
+        initialData: () => {
+            if (initialImages) {
+                return {
+                    pages: [initialImages],
+                    pageParams: [1],
+                };
+            }
+        },
+    });
+
+    const {
+        data,
+        fetchNextPage,
+        hasNextPage,
+        isFetchingNextPage,
+        status,
+        refetch
+    } = query;
+
+    // Real-time updates via socket
+    useEffect(() => {
+        if (!socket) return;
+        const onRefresh = () => {
+            console.log("Real-time refresh triggered");
+            refetch();
+        };
+        socket.on('gallery:refresh', onRefresh);
+        return () => socket.off('gallery:refresh', onRefresh);
+    }, [socket, refetch]);
 
     // Handle Browser Back/Forward
     useEffect(() => {
@@ -32,44 +75,6 @@ export default function GalleryClient({ initialFolders, initialImages, role }) {
         window.addEventListener('popstate', onPopState);
         return () => window.removeEventListener('popstate', onPopState);
     }, []);
-
-    // Sync if router pushes new params internally (edge case safety)
-    useEffect(() => {
-        const p = searchParams.get('preview');
-        if (p !== selectedFilename) {
-            setSelectedFilename(p);
-        }
-    }, [searchParams]);
-
-    // 1. Setup Infinite Query
-    const {
-        data,
-        fetchNextPage,
-        hasNextPage,
-        isFetchingNextPage,
-        status,
-        refetch
-    } = useInfiniteQuery({
-        queryKey: ['gallery', currentFolder || 'root'],
-        queryFn: async ({ pageParam = 1 }) => {
-            const res = await getGalleryData(currentFolder || '', pageParam);
-            return res;
-        },
-        getNextPageParam: (lastPage, allPages) => {
-            return lastPage.hasMore ? allPages.length + 1 : undefined;
-        },
-        initialData: () => {
-            // Only use initial data if it matches the current folder (mostly for first server render)
-            // But since this component is remounted/reset when folder changes (key in page.js),
-            // we can trust initialImages mostly.
-            if (initialImages) {
-                return {
-                    pages: [initialImages],
-                    pageParams: [1],
-                };
-            }
-        },
-    });
 
     // 2. Derive state from query data
     const folders = useMemo(() => data?.pages[0]?.folders || initialFolders || [], [data, initialFolders]);

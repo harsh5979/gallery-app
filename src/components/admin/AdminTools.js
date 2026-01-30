@@ -197,23 +197,45 @@ export default function AdminTools({ currentFolder }) {
                 // Handlers
                 const onReady = async () => {
                     try {
-                        for (let i = 0; i < totalChunks; i++) {
-                            const start = i * CHUNK_SIZE;
+                        const maxInFlight = 8;
+                        let inFlight = 0;
+                        let chunksSent = 0;
+
+                        const uploadNextChunk = async () => {
+                            if (chunksSent >= totalChunks) return;
+
+                            const chunkIdx = chunksSent++;
+                            const start = chunkIdx * CHUNK_SIZE;
                             const end = Math.min(start + CHUNK_SIZE, file.size);
                             const chunk = file.slice(start, end);
                             const arrayBuffer = await chunk.arrayBuffer();
 
+                            inFlight++;
                             socket.emit('upload_chunk', arrayBuffer);
 
-                            // Simple backpressure: wait for ack
-                            await new Promise(r => socket.once('upload_ack', r));
+                            if (inFlight < maxInFlight) {
+                                uploadNextChunk();
+                            }
+                        };
 
+                        const ackHandler = () => {
+                            inFlight--;
+                            if (chunksSent < totalChunks) {
+                                uploadNextChunk();
+                            }
+
+                            const sentSize = Math.min(chunksSent * CHUNK_SIZE, file.size);
                             setUploadProgress(prev => ({
                                 ...prev,
-                                currentFile: `${file.name} (${formatSize(end)} / ${formatSize(file.size)})`
+                                currentFile: `${file.name} (${formatSize(sentSize)} / ${formatSize(file.size)})`
                             }));
-                        }
-                        socket.emit('upload_end');
+                        };
+
+                        socket.on('upload_ack', ackHandler);
+                        uploadNextChunk();
+
+                        // We wait for 'upload_complete' which is emitted by server after stream finish
+                        // This is handled by the higher-level onComplete listener
                     } catch (e) {
                         cleanup();
                         reject(e);
@@ -230,7 +252,6 @@ export default function AdminTools({ currentFolder }) {
                     cleanup();
                     console.error("Socket Upload Error:", err);
                     setUploadProgress(prev => ({ ...prev, failed: prev.failed + 1 }));
-                    // Don't reject entire batch, just this file
                     resolve();
                 };
 
@@ -238,7 +259,11 @@ export default function AdminTools({ currentFolder }) {
                     socket.off('upload_ready', onReady);
                     socket.off('upload_complete', onComplete);
                     socket.off('upload_error', onError);
+                    socket.off('upload_ack', ackHandler); // We need to define ackHandler so we can off it
                 };
+
+                // Redefining to includes ackHandler in scope
+                let ackHandler;
 
                 // Listeners
                 socket.on('upload_ready', onReady);

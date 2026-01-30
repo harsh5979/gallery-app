@@ -65,6 +65,7 @@ export default function Lightbox({ selectedImage, images, currentFolder, onClose
 
     const isVideo = /\.(mp4|webm|mov|mkv)$/i.test(imageParam);
     const isImage = /\.(jpg|jpeg|png|gif|webp|svg|heic|heif|bmp|tiff|tif)$/i.test(imageParam);
+    const isPDF = /\.pdf$/i.test(imageParam);
     // isCodeFile already computed
 
     const codeLanguage = imageParam.split('.').pop();
@@ -163,6 +164,14 @@ export default function Lightbox({ selectedImage, images, currentFolder, onClose
                                     </div>
                                 </TransformComponent>
                             </TransformWrapper>
+                        ) : isPDF ? (
+                            <div className="relative w-full h-[90vh] flex items-center justify-center p-4">
+                                <iframe
+                                    src={src}
+                                    className="w-full h-full rounded-xl border border-white/10 shadow-2xl bg-white"
+                                    title={imageParam}
+                                />
+                            </div>
                         ) : (
                             // Fallback for non-previewable files (ISO, etc.)
                             <div className="flex flex-col items-center justify-center text-white gap-6 p-8 bg-white/5 rounded-2xl border border-white/10">
@@ -187,7 +196,7 @@ export default function Lightbox({ selectedImage, images, currentFolder, onClose
             </div>
 
             {/* Navigation Buttons (Hide if isCode or generic) */}
-            {!isCodeFile && isImage && (
+            {!isCodeFile && (isImage || isVideo || isPDF) && (
                 <>
                     <button className="absolute left-4 p-4 rounded-full bg-white/10 hover:bg-white/20 text-white z-50 transition" onClick={(e) => { e.stopPropagation(); onPrev && onPrev(); }}>
                         <ArrowLeft size={32} />
