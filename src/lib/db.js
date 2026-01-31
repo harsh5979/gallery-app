@@ -18,29 +18,31 @@ if (!cached) {
   cached = global.mongoose = { conn: null, promise: null };
 }
 
+
 async function dbConnect() {
-  if (cached.conn) {
+  if (cached.conn && mongoose.connection.readyState === 1) {
     return cached.conn;
   }
 
   if (!cached.promise) {
     const opts = {
-      bufferCommands: false,
-      serverSelectionTimeoutMS: 5000, // Fail fast if DB is down
+      bufferCommands: true,
+      serverSelectionTimeoutMS: 10000, // 10s timeout
+      socketTimeoutMS: 45000, // Close sockets after 45s of inactivity
     };
 
-    console.log('[DB] Connecting to MongoDB...');
-    cached.promise = mongoose.connect(MONGODB_URI, opts).then((mongoose) => {
-      console.log('[DB] MongoDB Connected Successfully');
-      return mongoose;
+    console.log('[DB] Attempting new MongoDB connection...');
+    cached.promise = mongoose.connect(MONGODB_URI, opts).then((mongooseInstance) => {
+      console.log('[DB] Connection Established Successfully');
+      return mongooseInstance;
     });
   }
 
   try {
     cached.conn = await cached.promise;
   } catch (e) {
-    console.error('[DB] MongoDB Connection Error:', e.message);
-    cached.promise = null; // Clear failed promise to allow retry
+    console.error('[DB] Critical Connection Fault:', e.message);
+    cached.promise = null; // Reset promise to allow fresh attempt
     throw e;
   }
 

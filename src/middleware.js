@@ -1,33 +1,35 @@
 import { NextResponse } from 'next/server';
 
+/**
+ * Middleware to handle Authentication and Route Protection
+ * 
+ * Logic:
+ * 1. Identify public paths (like /login)
+ * 2. If NO session and NOT public: redirect to /login (allow static assets)
+ * 3. IF session and IS public: redirect to /
+ */
 export function middleware(request) {
     const session = request.cookies.get('gallery_session');
     const { pathname } = request.nextUrl;
 
-    // Define public paths that don't require authentication
-    const publicPaths = ['/login'];
+    // Configuration
+    const PUBLIC_PATHS = ['/login'];
+    const isPublicPath = PUBLIC_PATHS.includes(pathname);
 
-    // Check if the current path is public
-    const isPublicPath = publicPaths.includes(pathname);
-
-    // If user is not authenticated and trying to access a protected route
+    // Case A: Unauthenticated access to protected regions
     if (!session && !isPublicPath) {
-        // Exclude Next.js internals and static files
-        if (pathname.startsWith('/_next') || pathname.startsWith('/api') || pathname.includes('.')) {
-            // Allow API calls? Usually APIs should be protected too unless specific ones.
-            // But for things like /favicon.ico, etc.
-            // Let's protect /api too except maybe auth?
-            // Actually, static files usually have extensions.
-            // Let's just redirect the main page and sub-folders.
-            return NextResponse.next();
-        }
+        // Allow Next.js internal files, API routes, and static assets (extensions)
+        const isInternalFile = pathname.startsWith('/_next') ||
+            pathname.startsWith('/api') ||
+            pathname.includes('.');
 
-        // Redirect to login
-        const loginUrl = new URL('/login', request.url);
-        return NextResponse.redirect(loginUrl);
+        if (!isInternalFile) {
+            const loginUrl = new URL('/login', request.url);
+            return NextResponse.redirect(loginUrl);
+        }
     }
 
-    // If user is authenticated and trying to access login page
+    // Case B: Authenticated user attempting to visit login page
     if (session && isPublicPath) {
         return NextResponse.redirect(new URL('/', request.url));
     }
@@ -35,16 +37,13 @@ export function middleware(request) {
     return NextResponse.next();
 }
 
+/**
+ * Matcher ensures middleware only runs on meaningful routes
+ */
 export const config = {
     matcher: [
         /*
-         * Match all request paths except for the ones starting with:
-         * - api (API routes) -> We DO want to match API to protect images if we want to be strict, 
-         *   BUT standard middleware often excludes API to handle auth with 401 instead of 307.
-         *   However, user said "if user is authenticated then show images". 
-         *   So we SHOULD protect even the API images route ideally.
-         *   But let's stick to protecting the UI pages primarily first.
-         *   
+         * Match all request paths except for:
          * - _next/static (static files)
          * - _next/image (image optimization files)
          * - favicon.ico (favicon file)

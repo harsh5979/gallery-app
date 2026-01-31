@@ -1,20 +1,26 @@
-
 import { cookies } from 'next/headers';
 import dbConnect from './db';
 import User from '@/models/User';
 import bcrypt from 'bcryptjs';
 
+/**
+ * Basic Authentication Utility Wrapper
+ * 
+ * Note: Uses a simple "id:role" session cookie for simplicity.
+ * Recommendation for Production: Use Signed JWT or Session Store.
+ */
+
 const SESSION_COOKIE = 'gallery_session';
 
+/**
+ * Retrieves the current session from cookies
+ */
 export async function getSession() {
     const cookieStore = await cookies();
     const session = cookieStore.get(SESSION_COOKIE);
     if (!session?.value) return null;
 
     try {
-        // Simple session: value is "userId:role" (In production, use JWT or signed tokens!)
-        // For this request, user asked for cookies auth. I will use a simple encoding for speed/simplicity
-        // but secure enough for a local gallery tool.
         const [id, role] = session.value.split(':');
         if (!id || !role) return null;
 
@@ -24,6 +30,9 @@ export async function getSession() {
     }
 }
 
+/**
+ * Validates user credentials and sets a persistent session cookie
+ */
 export async function loginUser(username, password) {
     await dbConnect();
     const user = await User.findOne({ username });
@@ -33,25 +42,34 @@ export async function loginUser(username, password) {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return { error: 'Invalid credentials' };
 
-    // Create session
+    // Set Session Cookie
     const cookieStore = await cookies();
-    // Simple insecure session for demo: userId:role
-    // Ideally sign this with JWT.
+
+    // Cookie Options:
+    // - httpOnly: Protects against XSS
+    // - secure: false (Allowed for IP-based access without HTTPS)
+    // - maxAge: 1 week (Persistence)
     cookieStore.set(SESSION_COOKIE, `${user._id}:${user.role}`, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        maxAge: 60 * 60 * 24 * 7, // 1 week
+        secure: false,
+        maxAge: 60 * 60 * 24 * 7,
         path: '/',
     });
 
     return { success: true, role: user.role };
 }
 
+/**
+ * Clears the session cookie
+ */
 export async function logoutUser() {
     const cookieStore = await cookies();
     cookieStore.delete(SESSION_COOKIE);
 }
 
+/**
+ * Helper to check if current session belongs to an admin
+ */
 export async function isAdmin() {
     const session = await getSession();
     return session?.role === 'admin';

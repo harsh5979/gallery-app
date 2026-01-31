@@ -7,68 +7,94 @@ import { useQueryClient } from '@tanstack/react-query';
 
 const SocketContext = createContext(null);
 
-export const useSocket = () => {
-    return useContext(SocketContext);
-};
+/**
+ * Hook to access the global socket instance
+ */
+export const useSocket = () => useContext(SocketContext);
 
+/**
+ * SocketProvider - Root wrapper for real-time capabilities
+ * Manages socket lifecycle, room joining, and project-wide event listeners.
+ */
 export function SocketProvider({ children, session }) {
     const [socket, setSocket] = useState(null);
     const router = useRouter();
     const queryClient = useQueryClient();
 
     useEffect(() => {
-        // Connect to same host
-        const socketInstance = io();
+        // Initialize socket connection to the current host
+        // Force pure WebSocket transport to eliminate HTTP polling overhead
+        const socketInstance = io({
+            transports: ['websocket']
+        });
 
+        // 1. Connection Event
         socketInstance.on('connect', () => {
-            console.log('Socket Connected:', socketInstance.id);
+            console.log('[Socket] Connected as:', socketInstance.id);
+            // Move state update to async listener to avoid React cascading render warnings
+            setSocket(socketInstance);
+
             if (session?.id) {
-                console.log('Joining User Room:', session.id);
+                console.log('[Socket] Authing session:', session.id);
                 socketInstance.emit('join_user_room', session.id);
             }
         });
 
-        socketInstance.on('revoke:access', async (data) => {
-            console.warn('Access Revoked:', data);
+        // 2. Error Handling
+        socketInstance.on('connect_error', (err) => {
+            console.error('[Socket] Connection failed:', err.message);
+        });
 
-            // 1. Refetch client-side data (images/folders)
+        // 3. Permission Revocation Listener
+        socketInstance.on('revoke:access', async (data) => {
+            console.warn('[Socket] Security Alert: Access Revoked', data);
+
+            // Wipe all gallery cache to ensure no unauthorized data persists in UI
             await queryClient.invalidateQueries({ queryKey: ['gallery'] });
 
-            // 2. Refresh Server Components (will show Access Denied if on restricted page)
+            // Force re-evaluation of Server Components (RSC)
             router.refresh();
         });
 
+        // 4. Targeted Permission Updates
         socketInstance.on('permission:update', async (data) => {
-            console.log('Permissions updated:', data);
+            console.log('[Socket] Permissions updated:', data);
 
-            // 1. Target the specific folder if path is provided, otherwise refresh all gallery data
+            // If a specific folder path is involved, target that query key specifically
             if (data?.folderPath) {
-                const normalized = data.folderPath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
-                // Precise invalidation for the folder and its contents
+                const normalized = String(data.folderPath).replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+
+                // Invalidate the folder itself and its contents
                 await queryClient.invalidateQueries({
                     queryKey: ['gallery', normalized || 'root']
                 });
-                // Also invalidate the root/parent to show the status icon change
+
+                // Invalidate the parent to update status icons (Global vs Lock icons)
                 const parent = normalized.includes('/')
                     ? normalized.substring(0, normalized.lastIndexOf('/'))
                     : 'root';
                 await queryClient.invalidateQueries({ queryKey: ['gallery', parent] });
             } else {
+                // Broad update (batch change)
                 await queryClient.invalidateQueries({ queryKey: ['gallery'] });
             }
 
-            // 2. Refresh RSC only for layout/auth changes (router.refresh is usually slower/more disruptive)
-            // If it's just a permission toggle on a folder, TanStack Query is enough.
-            // Only refresh if it was a bulk update or specifically requested
+            // Refresh RSC if it's a bulk operation or affects layout-level auth
             if (data?.isBulk || !data?.folderPath) {
                 router.refresh();
             }
         });
 
-        setSocket(socketInstance);
+        // 5. Broad Refresh Trigger
+        socketInstance.on('gallery:refresh', (data) => {
+            console.log('[Socket] Broad gallery refresh triggered:', data);
+            // Targeted invalidation can happen here, but usually mutations handle it.
+        });
 
+        // Cleanup on unmount or session change
         return () => {
             socketInstance.disconnect();
+            setSocket(null);
         };
     }, [session?.id, router, queryClient]);
 

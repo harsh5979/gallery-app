@@ -175,38 +175,65 @@ export async function updateFolderAccess(folderId, isPublic, allowedUsers = [], 
 
 export async function bulkToggleFoldersPublic(folderIds, isPublic, recursive = false) {
     if (!await isAdmin()) return { error: 'Unauthorized' };
-    await dbConnect();
 
     try {
+        await dbConnect();
+
+        if (!folderIds || folderIds.length === 0) {
+            return { error: 'No folders selected' };
+        }
+
+        console.log(`[BulkAction] Updating ${folderIds.length} folders to isPublic=${isPublic} (Recursive: ${recursive})`);
+
         if (recursive) {
+            // Fetch paths to apply recursion
             const folders = await Folder.find({ _id: { $in: folderIds } }).select('path');
+            const paths = folders.map(f => f.path);
 
-            // To avoid "Regular expression is invalid: pattern string is longer than the limit" (Location51091),
-            // we process updateMany in smaller batches of paths.
-            const BATCH_SIZE = 50;
-            for (let i = 0; i < folders.length; i += BATCH_SIZE) {
-                const batch = folders.slice(i, i + BATCH_SIZE);
-                const escapedPaths = batch.map(f => f.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-                const regex = new RegExp(`^(${escapedPaths.map(p => `${p}/`).join('|')})`);
+            // Batch the recursive updates to avoid giant regex / query limits
+            const BATCH_SIZE = 30;
+            for (let i = 0; i < paths.length; i += BATCH_SIZE) {
+                const batchPaths = paths.slice(i, i + BATCH_SIZE);
 
+                // Construct regex for children: starts with path/
+                const conditions = batchPaths.map(p => ({
+                    path: new RegExp('^' + p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/')
+                }));
+
+                // Update the folders themselves + their children
                 await Folder.updateMany(
-                    { $or: [{ _id: { $in: batch.map(f => f._id) } }, { path: { $regex: regex } }] },
-                    { isPublic }
+                    {
+                        $or: [
+                            { _id: { $in: folderIds.slice(i, i + BATCH_SIZE) } },
+                            ...conditions
+                        ]
+                    },
+                    { $set: { isPublic } }
                 );
             }
         } else {
-            await Folder.updateMany({ _id: { $in: folderIds } }, { isPublic });
+            // Simple non-recursive update in large batches
+            const BATCH_SIZE = 100;
+            for (let i = 0; i < folderIds.length; i += BATCH_SIZE) {
+                const batch = folderIds.slice(i, i + BATCH_SIZE);
+                await Folder.updateMany({ _id: { $in: batch } }, { $set: { isPublic } });
+            }
         }
 
+        // Global Synchronization
         revalidatePath('/admin/permissions');
         revalidatePath('/');
         revalidateTag('gallery');
-        emitSocketEvent('permission:update', null, { isBulk: true });
+
+        // Notify via socket
+        await emitSocketEvent('permission:update', null, { isBulk: true, isPublic });
         notifyChange('permission');
 
+        console.log(`[BulkAction] Success: ${folderIds.length} folders processed`);
         return { success: true };
     } catch (e) {
-        return { error: e.message };
+        console.error('[BulkAction] Failure:', e);
+        return { error: `Permission update failed: ${e.message}` };
     }
 }
 
