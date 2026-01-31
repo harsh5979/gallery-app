@@ -5,6 +5,9 @@ const nextConfig = {
       bodySizeLimit: '500mb',
     },
     // serverActions: true, // Enabled by default in 15
+    turbopack: {
+      root: '.',
+    },
   },
   images: {
     // Optimize for server performance
